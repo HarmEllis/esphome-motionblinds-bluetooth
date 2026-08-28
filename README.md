@@ -179,6 +179,33 @@ meaning differs:
 | `safety_margin` | no | `2%` | Added on top when computing targets, for whole-numbered feedback and motor overshoot. |
 | `clearance_timeout` | no | `60s` | How long the second rail waits for the first to make room. |
 | `lease_timeout` | no | `180s` | Upper bound on holding both connections open. |
+| `diagnostics` | no | | Builds the per-rail diagnostic entities; see below. |
+
+### Diagnostics come with the blind
+
+```yaml
+motionblinds_ble_tdbu:
+  - id: living_blind
+    top_motor: living_top
+    bottom_motor: living_bottom
+    diagnostics:
+      name: "Living blind"
+```
+
+That one block creates, for **both** rails: battery, signal strength,
+connection status, position freshness, and a refresh button — ten entities
+named after the prefix (`Living blind top battery`, `Living blind bottom
+refresh`, and so on).
+
+The coordinator already knows both motors, so making you declare twenty
+near-identical entities for a three-blind window is busywork. The individual
+`motionblinds_ble` platforms below remain available when you want a different
+subset, different names, or diagnostics for a motor that is not part of a
+top-down bottom-up blind.
+
+Because of this the component auto-loads `sensor`, `binary_sensor`,
+`text_sensor` and `button`, which costs a little flash even if you never use
+`diagnostics:`.
 
 ### Positions mean openness
 
@@ -233,7 +260,9 @@ Rails that touch jam the motors and stop mid-travel. Five rules, in order:
    what covers the moves the planning cannot see: a stalling rail, the physical
    remote, and the favorite button.
 
-## Diagnostics and controls
+## Diagnostics and controls, per motor
+
+For a single motor, or when you want to pick and name the entities yourself:
 
 ```yaml
 sensor:

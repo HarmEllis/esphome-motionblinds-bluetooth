@@ -62,6 +62,9 @@ class MotionblindsBLETdbu : public Component {
   void stop_all();
 
   // ---------------------------------------------------------------- state
+  /// The motor driving one rail, for entities that report per-motor state.
+  MotionblindsBLEMotor *motor(Rail rail) const { return this->motor_(rail); }
+
   bool positions_known() const;
   float rail_openness(Rail rail) const;
   float combined_openness() const;

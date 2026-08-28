@@ -22,9 +22,8 @@ bool MotionblindsBLEClient::parse_device(const espbt::ESPBTDevice &device) {
   if (this->mac_code_ != NO_MAC_CODE && this->address_ == 0) {
     if ((device.address_uint64() & 0xFFFF) != this->mac_code_)
       return false;
-    ESP_LOGI(TAG, "Motion %04X is %s", static_cast<unsigned>(this->mac_code_),
-             device.address_str().c_str());
     this->set_address(device.address_uint64());
+    ESP_LOGI(TAG, "Motion %04X is %s", static_cast<unsigned>(this->mac_code_), this->address_str());
   }
 
   const bool ours = BLEClientBase::parse_device(device);
