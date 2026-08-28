@@ -469,12 +469,24 @@ void MotionblindsBLEMotor::loop() {
       break;
   }
 
+  // An operation with nothing outstanding is over, whatever the state machine is
+  // doing. Leaving the clock running meant a later request could inherit a start
+  // time from minutes earlier -- start_operation_() only sets it when it is zero
+  // -- and blow a deadline it never had a chance to meet. That is how a command
+  // that had just failed for its own reason was immediately failed a second
+  // time, with a different and misleading reason.
+  if (this->operation_since_ != 0 && this->queue_.empty() && !this->command_in_flight_ && !this->leased())
+    this->operation_since_ = 0;
+
   // A single operation may not outlive its total budget no matter which state
   // it is spread across.
   // The stuck-connect case is exempt: it is already counting down to its own
   // recovery, and failing it here would take that away.
   if (this->operation_since_ != 0 && now - this->operation_since_ > this->operation_timeout_ &&
       this->state_ != MotorState::FAILED && !this->stuck_reported_) {
+    ESP_LOGE(TAG, "[%s] Operation ran for %us against a budget of %us", this->label_,
+             static_cast<unsigned>((now - this->operation_since_) / 1000),
+             static_cast<unsigned>(this->operation_timeout_ / 1000));
     this->fail_("operation exceeded its total deadline");
   }
 }
@@ -1006,10 +1018,14 @@ void MotionblindsBLEMotor::set_state_(MotorState state) {
 void MotionblindsBLEMotor::fail_(const char *reason) {
   ESP_LOGE(TAG, "[%s] Command failed: %s", this->label_, reason);
   this->queue_.clear();
-  this->set_state_(MotorState::FAILED);
-  this->abort_();
+  // Cleared before anything is published, not after. Both calls below notify
+  // the coordinator, which may queue fresh work from inside them, and
+  // start_operation_() adopts whatever start time it finds -- so clearing
+  // afterwards handed the new operation this failed one's clock.
   this->operation_since_ = 0;
   this->lease_count_ = 0;
+  this->set_state_(MotorState::FAILED);
+  this->abort_();
 }
 
 void MotionblindsBLEMotor::retry_connection_(const char *reason) {
