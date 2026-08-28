@@ -28,6 +28,10 @@ static const uint8_t QUEUE_LIMIT = 8;
 /// Two consecutive frames on target before a move counts as settled, so a
 /// single frame taken while the rail passes through cannot end the wait.
 static const uint8_t SETTLE_FRAMES = 2;
+/// How long to wait for a status frame before assuming the request never
+/// arrived, and how many times to ask again before giving up on the motor.
+static const uint32_t HANDSHAKE_RETRY_MS = 3000;
+static const uint8_t MAX_HANDSHAKE_ATTEMPTS = 3;
 
 const char *motor_state_to_string(MotorState state) {
   switch (state) {
@@ -437,20 +441,40 @@ void MotionblindsBLEMotor::reconcile_state_() {
 }
 
 void MotionblindsBLEMotor::drive_handshake_() {
-  if (this->handshake_ != Handshake::WAIT_BLIND_SETTLE)
-    return;
+  const uint32_t now = millis();
 
-  const uint32_t delay = (this->blind_type_ == BlindType::CURTAIN || this->blind_type_ == BlindType::VERTICAL)
-                             ? CURTAIN_SETTLE_DELAY_MS
-                             : SETTLE_DELAY_MS;
-  if (millis() - this->settle_since_ < delay)
-    return;
+  if (this->handshake_ == Handshake::WAIT_BLIND_SETTLE) {
+    const uint32_t delay = (this->blind_type_ == BlindType::CURTAIN || this->blind_type_ == BlindType::VERTICAL)
+                               ? CURTAIN_SETTLE_DELAY_MS
+                               : SETTLE_DELAY_MS;
+    if (now - this->settle_since_ < delay)
+      return;
 
-  if (!this->write_command_(Command::STATUS_QUERY, 0)) {
-    this->fail_("could not request status");
+    if (!this->write_command_(Command::STATUS_QUERY, 0)) {
+      this->fail_("could not request status");
+      return;
+    }
+    this->handshake_ = Handshake::WAIT_STATUS;
+    this->handshake_retry_at_ = now + HANDSHAKE_RETRY_MS;
     return;
   }
-  this->handshake_ = Handshake::WAIT_STATUS;
+
+  if (this->handshake_ != Handshake::WAIT_STATUS || now < this->handshake_retry_at_)
+    return;
+
+  // Every command is written without a response, so a lost write is silent.
+  // Sitting out the whole handshake timeout waiting for an answer to a request
+  // that never arrived wastes the connection; ask again instead. The key is
+  // re-sent with it, because a motor that never got keyed would ignore the
+  // query no matter how often it is repeated.
+  if (++this->handshake_attempts_ >= MAX_HANDSHAKE_ATTEMPTS)
+    return;  // let the handshake deadline name the failure
+
+  ESP_LOGI(TAG, "[%s] No status yet, asking again (attempt %u of %u)", this->label_,
+           static_cast<unsigned>(this->handshake_attempts_ + 1), static_cast<unsigned>(MAX_HANDSHAKE_ATTEMPTS));
+  this->write_command_(Command::SET_KEY, 0);
+  this->write_command_(Command::STATUS_QUERY, 0);
+  this->handshake_retry_at_ = now + HANDSHAKE_RETRY_MS;
 }
 
 void MotionblindsBLEMotor::dispatch_() {
@@ -644,6 +668,7 @@ void MotionblindsBLEMotor::gattc_event_handler(esp_gattc_cb_event_t event, esp_g
       }
       this->handshake_ = Handshake::WAIT_BLIND_SETTLE;
       this->settle_since_ = millis();
+      this->handshake_attempts_ = 0;
       break;
     }
 

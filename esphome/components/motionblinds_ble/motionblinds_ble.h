@@ -225,6 +225,8 @@ class MotionblindsBLEMotor : public Component {
   /// would shrink the deadline as the rail approaches its target.
   uint32_t command_budget_{0};
   uint32_t settle_since_{0};
+  uint32_t handshake_retry_at_{0};
+  uint8_t handshake_attempts_{0};
   uint32_t connecting_since_{0};
   uint8_t attempts_{0};
   uint8_t discovery_round_{0};
