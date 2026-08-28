@@ -1,0 +1,36 @@
+# Must fail: motors are reached by waiting for their advertisements, so the
+# scanner has to be running for one to ever be connectable.
+esphome:
+  name: invalid-scanning
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+wifi:
+  ssid: fixture
+  password: fixture-password
+
+external_components:
+  - source:
+      type: local
+      path: ../../esphome/components
+    components: [motionblinds_ble]
+
+time:
+  - platform: sntp
+    id: local_time
+
+esp32_ble:
+  max_connections: 1
+
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: false
+
+motionblinds_ble:
+  - {id: m1, mac_address: A4:C1:38:00:00:01, time_id: local_time}

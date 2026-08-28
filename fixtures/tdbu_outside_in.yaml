@@ -1,0 +1,76 @@
+# A top-down bottom-up blind with two sheets of fabric that close in from the
+# top and the bottom of the window, meeting in the middle.
+#
+# Both rails are calibrated over only their own half of the window here, which
+# is what window_min/window_max exist for: without them the two motors would
+# not share a scale and every clearance calculation would be wrong.
+#
+#   esphome config fixtures/tdbu_outside_in.yaml
+
+esphome:
+  name: motionblinds-outside-in
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+wifi:
+  ssid: fixture
+  password: fixture-password
+
+external_components:
+  - source:
+      type: local
+      path: ../esphome/components
+    components: [motionblinds_ble, motionblinds_ble_tdbu]
+
+time:
+  - platform: sntp
+    id: local_time
+
+esp32_ble:
+  max_connections: 2
+
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: true
+
+motionblinds_ble:
+  - id: bedroom_top
+    mac_address: A4:C1:38:00:21:4E
+    time_id: local_time
+    blind_type: honeycomb
+    window_min: 0
+    window_max: 55
+  - id: bedroom_bottom
+    mac_address: A4:C1:38:00:19:CE
+    time_id: local_time
+    blind_type: honeycomb
+    window_min: 45
+    window_max: 100
+
+motionblinds_ble_tdbu:
+  - id: bedroom_blind
+    top_motor: bedroom_top
+    bottom_motor: bedroom_bottom
+    fabric: outside_in
+    min_gap: 8%
+    safety_margin: 3%
+
+cover:
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: bedroom_blind
+    rail: combined
+    name: "Bedroom blind"
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: bedroom_blind
+    rail: top
+    name: "Bedroom blind top"
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: bedroom_blind
+    rail: bottom
+    name: "Bedroom blind bottom"

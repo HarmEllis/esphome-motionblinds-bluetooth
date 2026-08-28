@@ -1,0 +1,115 @@
+# A top-down bottom-up blind with the fabric strung between the two rails,
+# which is the common pleated (plisse) construction.
+#
+#   esphome config fixtures/tdbu_between_rails.yaml
+
+esphome:
+  name: motionblinds-tdbu
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+wifi:
+  ssid: fixture
+  password: fixture-password
+
+external_components:
+  - source:
+      type: local
+      path: ../esphome/components
+    components: [motionblinds_ble, motionblinds_ble_tdbu]
+
+time:
+  - platform: sntp
+    id: local_time
+
+esp32_ble:
+  max_connections: 2
+
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: true
+
+motionblinds_ble:
+  - id: living_top
+    mac_address: A4:C1:38:00:0A:5A
+    time_id: local_time
+    blind_type: honeycomb
+  - id: living_bottom
+    mac_address: A4:C1:38:00:EB:AA
+    time_id: local_time
+    blind_type: honeycomb
+    # This rail is mounted upside down, so its raw positions run the other way
+    # through the window.
+    invert: true
+
+motionblinds_ble_tdbu:
+  - id: living_blind
+    top_motor: living_top
+    bottom_motor: living_bottom
+    fabric: between_rails
+    min_gap: 5%
+    safety_margin: 2%
+
+cover:
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: living_blind
+    rail: combined
+    name: "Living blind"
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: living_blind
+    rail: top
+    name: "Living blind top"
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: living_blind
+    rail: bottom
+    name: "Living blind bottom"
+
+number:
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: living_blind
+    fabric_position:
+      name: "Living blind fabric position"
+
+sensor:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    battery_level:
+      name: "Living blind top battery"
+    signal_strength:
+      name: "Living blind top signal"
+
+binary_sensor:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    position_fresh:
+      name: "Living blind top position fresh"
+    calibrated:
+      name: "Living blind top calibration"
+
+text_sensor:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    connection_status:
+      name: "Living blind top connection"
+
+select:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    speed:
+      name: "Living blind top speed"
+
+button:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    action: status_query
+    name: "Living blind top refresh"
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    action: favorite
+    name: "Living blind top favorite"

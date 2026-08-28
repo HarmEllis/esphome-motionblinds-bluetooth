@@ -1,0 +1,41 @@
+# Must fail: Bluetooth leaves six GATT client registrations after its own two,
+# so a seventh motor cannot exist on this node. ESPHome's own slot accounting
+# only warns here, which is why the component checks it itself.
+esphome:
+  name: invalid-too-many
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+wifi:
+  ssid: fixture
+  password: fixture-password
+
+external_components:
+  - source:
+      type: local
+      path: ../../esphome/components
+    components: [motionblinds_ble]
+
+time:
+  - platform: sntp
+    id: local_time
+
+esp32_ble:
+  max_connections: 7
+
+esp32_ble_tracker:
+
+motionblinds_ble:
+  - {id: m1, mac_address: A4:C1:38:00:00:01, time_id: local_time}
+  - {id: m2, mac_address: A4:C1:38:00:00:02, time_id: local_time}
+  - {id: m3, mac_address: A4:C1:38:00:00:03, time_id: local_time}
+  - {id: m4, mac_address: A4:C1:38:00:00:04, time_id: local_time}
+  - {id: m5, mac_address: A4:C1:38:00:00:05, time_id: local_time}
+  - {id: m6, mac_address: A4:C1:38:00:00:06, time_id: local_time}
+  - {id: m7, mac_address: A4:C1:38:00:00:07, time_id: local_time}

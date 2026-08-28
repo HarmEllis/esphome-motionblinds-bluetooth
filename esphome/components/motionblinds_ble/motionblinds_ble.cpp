@@ -1,0 +1,750 @@
+#include "motionblinds_ble.h"
+
+#ifdef USE_ESP32
+
+#include <cmath>
+#include <cstring>
+
+#include "esphome/core/application.h"
+#include "esphome/core/hal.h"
+#include "esphome/core/log.h"
+
+namespace esphome::motionblinds_ble {
+
+static const char *const TAG = "motionblinds_ble";
+
+/// The motor needs a moment after SET_KEY before it answers; curtain and
+/// vertical blinds need considerably longer.
+static const uint32_t SETTLE_DELAY_MS = 200;
+static const uint32_t CURTAIN_SETTLE_DELAY_MS = 500;
+/// A write is only unacknowledged for as long as the local stack takes.
+static const uint32_t COMMAND_ACK_TIMEOUT_MS = 5000;
+/// Travel budget, scaled by how far the rail has to go.
+static const uint32_t TRAVEL_TIMEOUT_BASE_MS = 5000;
+static const uint32_t TRAVEL_TIMEOUT_PER_PERCENT_MS = 400;
+static const uint8_t MAX_ATTEMPTS = 3;
+static const uint8_t QUEUE_LIMIT = 8;
+/// Two consecutive frames on target before a move counts as settled, so a
+/// single frame taken while the rail passes through cannot end the wait.
+static const uint8_t SETTLE_FRAMES = 2;
+
+const char *motor_state_to_string(MotorState state) {
+  switch (state) {
+    case MotorState::IDLE:
+      return "disconnected";
+    case MotorState::DISCOVERING:
+      return "discovering";
+    case MotorState::CONNECTING:
+      return "connecting";
+    case MotorState::HANDSHAKE:
+      return "connecting";
+    case MotorState::READY:
+      return "connected";
+    case MotorState::DISCONNECTING:
+      return "disconnecting";
+    case MotorState::FAILED:
+      return "error";
+  }
+  return "unknown";
+}
+
+void MotionblindsBLEMotor::setup() {
+  this->position_pref_ = global_preferences->make_preference<PersistedPosition>(this->preference_key_);
+
+  PersistedPosition stored{};
+  if (this->position_pref_.load(&stored) && stored.valid) {
+    // Restored for continuity in the UI only. It is explicitly not fresh: a
+    // remote or the vendor app can move a rail while this node is powered off,
+    // so this value must never be the basis for a collision decision.
+    this->raw_position_ = stored.raw_position;
+    this->raw_tilt_ = stored.raw_tilt;
+    this->has_position_ = true;
+    this->position_fresh_ = false;
+    ESP_LOGD(TAG, "Restored stale position %u", static_cast<unsigned>(stored.raw_position));
+  }
+}
+
+void MotionblindsBLEMotor::dump_config() {
+  ESP_LOGCONFIG(TAG, "Motionblinds BLE motor");
+  ESP_LOGCONFIG(TAG,
+                "  Window range: %.1f%% - %.1f%%\n"
+                "  Inverted: %s\n"
+                "  Disconnect delay: %us\n"
+                "  Discovery timeout: %us\n"
+                "  Recover by reboot: %s",
+                this->range_.window_min, this->range_.window_max, YESNO(this->range_.invert),
+                static_cast<unsigned>(this->disconnect_delay_ / 1000),
+                static_cast<unsigned>(this->discovery_timeout_ / 1000), YESNO(this->recover_by_reboot_));
+  if (this->time_ == nullptr)
+    ESP_LOGE(TAG, "  No time source: commands cannot be encrypted");
+}
+
+// ---------------------------------------------------------------- requests
+
+bool MotionblindsBLEMotor::request_position(float window_position) {
+  if (std::isnan(window_position))
+    return false;
+  const uint8_t raw = static_cast<uint8_t>(lroundf(this->range_.to_raw(window_position)));
+  return this->enqueue_(Command::PERCENT, raw, Verification::SETTLED, raw);
+}
+
+bool MotionblindsBLEMotor::request_open() {
+  // Sent as an explicit position rather than the protocol's OPEN command:
+  // OPEN means "fully open in the motor's own frame", which is the wrong end
+  // of the window for an inverted or partially calibrated rail.
+  return this->request_position(this->range_.invert ? this->range_.window_max : this->range_.window_min);
+}
+
+bool MotionblindsBLEMotor::request_close() {
+  return this->request_position(this->range_.invert ? this->range_.window_min : this->range_.window_max);
+}
+
+bool MotionblindsBLEMotor::request_stop() {
+  // Stop is the safety primitive: the clearance watchdog calls it to break up
+  // an imminent collision, so it must never queue behind the position command
+  // it is trying to interrupt. Waiting for that command to verify would mean
+  // stopping only once the rail had already arrived.
+  this->queue_.clear();
+  this->command_in_flight_ = false;
+  this->settle_matches_ = 0;
+  this->moving_ = false;
+  this->travel_direction_ = 0;
+
+  if (this->state_ == MotorState::READY && this->command_handle_ != 0) {
+    if (this->write_command_(Command::STOP, 0)) {
+      this->in_flight_ = PendingCommand{Command::STOP, 0, Verification::ACKED, 0};
+      this->command_in_flight_ = true;
+      this->command_sent_at_ = millis();
+      this->command_budget_ = COMMAND_ACK_TIMEOUT_MS;
+      this->last_activity_ = this->command_sent_at_;
+      return true;
+    }
+    ESP_LOGW(TAG, "Could not write stop directly, queueing it");
+  }
+
+  // Not connected, or the write failed: fall back to the queue so the stop
+  // still goes out once there is a link.
+  return this->enqueue_(Command::STOP, 0, Verification::ACKED);
+}
+
+bool MotionblindsBLEMotor::request_favorite() {
+  if (!this->favorite_set_ && this->position_fresh_) {
+    ESP_LOGW(TAG, "No favorite position is set on this motor; refusing to send a command it would ignore");
+    return false;
+  }
+  return this->enqueue_(Command::FAVORITE, 0, Verification::ACKED);
+}
+
+bool MotionblindsBLEMotor::request_speed(SpeedLevel level) {
+  return this->enqueue_(Command::SPEED, static_cast<uint8_t>(level), Verification::ACKED);
+}
+
+bool MotionblindsBLEMotor::request_status() { return this->enqueue_(Command::STATUS_QUERY, 0, Verification::STARTED); }
+
+void MotionblindsBLEMotor::request_connect() {
+  this->acquire_lease();
+  this->request_status();
+}
+
+void MotionblindsBLEMotor::request_disconnect() {
+  this->lease_count_ = 0;
+  this->queue_.clear();
+  this->abort_();
+}
+
+bool MotionblindsBLEMotor::enqueue_(Command command, uint8_t argument, Verification verification, uint8_t target) {
+  if (this->time_ == nullptr) {
+    ESP_LOGE(TAG, "Refusing command: no time source configured");
+    return false;
+  }
+
+  // A newer position request replaces an older one that has not gone out yet;
+  // queueing both would drive the rail to a position nobody still wants.
+  if (command == Command::PERCENT) {
+    for (auto &queued : this->queue_) {
+      if (queued.command == Command::PERCENT) {
+        queued.argument = argument;
+        queued.target = target;
+        queued.verification = verification;
+        this->start_operation_();
+        return true;
+      }
+    }
+  }
+
+  if (this->queue_.size() >= QUEUE_LIMIT) {
+    ESP_LOGW(TAG, "Command queue full, dropping command %d", static_cast<int>(command));
+    return false;
+  }
+
+  this->queue_.push_back(PendingCommand{command, argument, verification, target});
+  this->start_operation_();
+  return true;
+}
+
+void MotionblindsBLEMotor::start_operation_() {
+  const uint32_t now = millis();
+  this->last_activity_ = now;
+  if (this->state_ == MotorState::FAILED) {
+    // A new request is an explicit instruction to try again.
+    this->attempts_ = 0;
+    this->set_state_(MotorState::IDLE);
+  }
+  if (this->operation_since_ == 0)
+    this->operation_since_ = now;
+
+  if (this->state_ == MotorState::IDLE && this->ble_client_ != nullptr) {
+    ESP_LOGD(TAG, "Work queued, enabling BLE client");
+    this->ble_client_->set_enabled(true);
+    this->set_state_(MotorState::DISCOVERING);
+    this->connecting_since_ = 0;
+  }
+}
+
+void MotionblindsBLEMotor::finish_operation_() {
+  this->operation_since_ = 0;
+  this->attempts_ = 0;
+}
+
+void MotionblindsBLEMotor::acquire_lease() {
+  this->lease_count_++;
+  this->last_activity_ = millis();
+  if (this->state_ == MotorState::IDLE)
+    this->start_operation_();
+}
+
+void MotionblindsBLEMotor::release_lease() {
+  if (this->lease_count_ > 0)
+    this->lease_count_--;
+  this->last_activity_ = millis();
+}
+
+// ------------------------------------------------------------------- loop
+
+void MotionblindsBLEMotor::loop() {
+  const uint32_t now = millis();
+
+  this->reconcile_state_();
+
+  switch (this->state_) {
+    case MotorState::IDLE:
+    case MotorState::FAILED:
+      break;
+
+    case MotorState::DISCOVERING:
+      if (now - this->state_since_ > this->discovery_timeout_)
+        this->fail_("not seen on air");
+      break;
+
+    case MotorState::CONNECTING:
+      if (this->connecting_since_ != 0 && now - this->connecting_since_ > this->stuck_connect_timeout_) {
+        // There is no way to cancel an outstanding esp_ble_gattc_open through
+        // the public API, and forcing our own state to IDLE would risk leaking
+        // a link if the connect lands late. All we can do is be loud, and
+        // optionally reboot.
+        if (!this->recover_by_reboot_) {
+          this->fail_("stuck connecting, no connection event from the stack");
+          break;
+        }
+        // Rebooting is the only remaining recovery and it is deliberately
+        // delayed, so this stays in CONNECTING until then. Failing here
+        // instead would leave the state machine somewhere the reboot check
+        // never runs again.
+        if (!this->stuck_reported_) {
+          ESP_LOGE(TAG, "Stuck connecting with no way to cancel it; will reboot if it does not clear");
+          this->stuck_reported_ = true;
+          this->publish_();
+        }
+        if (now - this->connecting_since_ > this->recover_after_) {
+          ESP_LOGE(TAG, "Stuck connecting for %us, rebooting to recover",
+                   static_cast<unsigned>((now - this->connecting_since_) / 1000));
+          App.safe_reboot();
+        }
+      } else if (now - this->state_since_ > this->connect_timeout_) {
+        this->fail_("connect timed out");
+      }
+      break;
+
+    case MotorState::HANDSHAKE:
+      if (now - this->state_since_ > this->handshake_timeout_) {
+        this->fail_("handshake timed out");
+      } else {
+        this->drive_handshake_();
+      }
+      break;
+
+    case MotorState::READY:
+      this->dispatch_();
+      if (this->queue_.empty() && !this->command_in_flight_ && !this->leased() &&
+          now - this->last_activity_ > this->disconnect_delay_) {
+        ESP_LOGD(TAG, "Idle, disconnecting");
+        this->finish_operation_();
+        this->abort_();
+      }
+      break;
+
+    case MotorState::DISCONNECTING:
+      // BLEClientBase has its own ten second watchdog for a lost CLOSE event
+      // and forwards the resulting IDLE to us, so this only has to notice that
+      // it never arrived at all.
+      if (now - this->state_since_ > 15000) {
+        ESP_LOGW(TAG, "Disconnect did not complete, giving up on it");
+        this->set_state_(MotorState::IDLE);
+        this->mark_stale_();
+      }
+      break;
+  }
+
+  // A single operation may not outlive its total budget no matter which state
+  // it is spread across.
+  // The stuck-connect case is exempt: it is already counting down to its own
+  // recovery, and failing it here would take that away.
+  if (this->operation_since_ != 0 && now - this->operation_since_ > this->operation_timeout_ &&
+      this->state_ != MotorState::FAILED && !this->stuck_reported_) {
+    this->fail_("operation exceeded its total deadline");
+  }
+}
+
+void MotionblindsBLEMotor::reconcile_state_() {
+  if (this->ble_client_ == nullptr)
+    return;
+
+  const espbt::ClientState client = this->ble_client_->state();
+
+  if (client == espbt::ClientState::CONNECTING && this->connecting_since_ == 0)
+    this->connecting_since_ = millis();
+
+  switch (this->state_) {
+    case MotorState::DISCOVERING:
+      if (client == espbt::ClientState::CONNECTING || client == espbt::ClientState::CONNECTED ||
+          client == espbt::ClientState::ESTABLISHED)
+        this->set_state_(MotorState::CONNECTING);
+      break;
+
+    case MotorState::CONNECTING:
+    case MotorState::HANDSHAKE:
+    case MotorState::READY:
+      // Every path that returns the parent to IDLE goes through the virtual
+      // set_state(), which BLEClient forwards to its nodes, so this is a
+      // reliable signal that the link is gone.
+      if (client == espbt::ClientState::IDLE) {
+        ESP_LOGD(TAG, "Connection lost");
+        this->mark_stale_();
+        this->set_state_(MotorState::IDLE);
+        this->connecting_since_ = 0;
+        if (!this->queue_.empty() || this->leased()) {
+          if (++this->attempts_ >= MAX_ATTEMPTS) {
+            this->fail_("gave up after repeated connection failures");
+          } else {
+            ESP_LOGW(TAG, "Retrying, attempt %u of %u", static_cast<unsigned>(this->attempts_ + 1),
+                     static_cast<unsigned>(MAX_ATTEMPTS));
+            this->ble_client_->set_enabled(true);
+            this->set_state_(MotorState::DISCOVERING);
+          }
+        }
+      }
+      break;
+
+    case MotorState::DISCONNECTING:
+      if (client == espbt::ClientState::IDLE) {
+        this->set_state_(MotorState::IDLE);
+        this->connecting_since_ = 0;
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+void MotionblindsBLEMotor::drive_handshake_() {
+  if (this->handshake_ != Handshake::WAIT_BLIND_SETTLE)
+    return;
+
+  const uint32_t delay = (this->blind_type_ == BlindType::CURTAIN || this->blind_type_ == BlindType::VERTICAL)
+                             ? CURTAIN_SETTLE_DELAY_MS
+                             : SETTLE_DELAY_MS;
+  if (millis() - this->settle_since_ < delay)
+    return;
+
+  if (!this->write_command_(Command::STATUS_QUERY, 0)) {
+    this->fail_("could not request status");
+    return;
+  }
+  this->handshake_ = Handshake::WAIT_STATUS;
+}
+
+void MotionblindsBLEMotor::dispatch_() {
+  const uint32_t now = millis();
+
+  if (this->command_in_flight_) {
+    switch (this->in_flight_.verification) {
+      case Verification::ACKED:
+        if (now - this->command_sent_at_ > this->command_budget_) {
+          ESP_LOGW(TAG, "No write completion, treating the command as delivered anyway");
+          this->command_in_flight_ = false;
+          this->finish_operation_();
+        }
+        break;
+
+      case Verification::STARTED:
+        if (now - this->command_sent_at_ > this->command_budget_)
+          this->fail_("motor did not answer the status query");
+        break;
+
+      case Verification::SETTLED:
+        if (now - this->command_sent_at_ > this->command_budget_)
+          this->fail_("motor never reached the commanded position");
+        break;
+    }
+    return;
+  }
+
+  if (this->queue_.empty())
+    return;
+
+  const PendingCommand command = this->queue_.front();
+  this->queue_.erase(this->queue_.begin());
+
+  const int distance = std::abs(static_cast<int>(command.target) - static_cast<int>(this->raw_position_));
+
+  if (!this->write_command_(command.command, command.argument)) {
+    this->fail_("could not write command");
+    return;
+  }
+
+  this->in_flight_ = command;
+  this->command_in_flight_ = true;
+  this->command_sent_at_ = now;
+  this->settle_matches_ = 0;
+  this->last_activity_ = now;
+
+  // Fixed here, not recomputed each loop: a budget derived from the live
+  // position shrinks as the rail approaches, and would cut a long move short
+  // long before its real allowance ran out.
+  this->command_budget_ = command.verification == Verification::SETTLED
+                              ? TRAVEL_TIMEOUT_BASE_MS + distance * TRAVEL_TIMEOUT_PER_PERCENT_MS
+                              : COMMAND_ACK_TIMEOUT_MS;
+
+  if (command.command == Command::PERCENT) {
+    this->moving_ = true;
+    this->travel_direction_ = command.target == this->raw_position_
+                                  ? 0
+                                  : (this->range_.to_window(static_cast<float>(command.target)) >
+                                             this->range_.to_window(static_cast<float>(this->raw_position_))
+                                         ? 1
+                                         : -1);
+  }
+}
+
+bool MotionblindsBLEMotor::write_command_(Command command, uint8_t argument) {
+  if (this->command_handle_ == 0 || this->ble_client_ == nullptr)
+    return false;
+
+  if (this->time_ == nullptr) {
+    ESP_LOGE(TAG, "Refusing command: no time source configured");
+    return false;
+  }
+  const ESPTime now = this->time_->now();
+  if (!now.is_valid()) {
+    ESP_LOGE(TAG, "Refusing command: clock not synchronised");
+    return false;
+  }
+
+  uint8_t plain[MAX_COMMAND_PREFIX + MotionCrypt::TIMESTAMP_SIZE];
+  const size_t body = build_command_body(command, argument, plain);
+  if (body == 0)
+    return false;
+
+  MotionCrypt::build_timestamp(static_cast<uint8_t>(now.year % 100), now.month, now.day_of_month, now.hour, now.minute,
+                              now.second, static_cast<uint16_t>(millis() % 1000), plain + body);
+
+  uint8_t frame[MAX_COMMAND_FRAME];
+  const size_t frame_len = MotionCrypt::encrypt(plain, body + MotionCrypt::TIMESTAMP_SIZE, frame, sizeof(frame));
+  if (frame_len == 0)
+    return false;
+
+  // Written without a response, exactly as the vendor library does; asking for
+  // one provokes an ATT "unlikely error" on these motors.
+  const esp_err_t status = esp_ble_gattc_write_char(this->ble_client_->get_gattc_if(), this->ble_client_->get_conn_id(),
+                                                    this->command_handle_, static_cast<uint16_t>(frame_len), frame,
+                                                    ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+  if (status != ESP_OK) {
+    ESP_LOGW(TAG, "Write failed: %d", status);
+    return false;
+  }
+  return true;
+}
+
+// ------------------------------------------------------------ GATT events
+
+void MotionblindsBLEMotor::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
+                                               esp_ble_gattc_cb_param_t *param) {
+  switch (event) {
+    case ESP_GATTC_SEARCH_CMPL_EVT: {
+      // Handles must be re-read on every connection; they are not guaranteed
+      // to survive a reconnect, and the service objects are freed shortly.
+      auto *command = this->ble_client_->get_characteristic(espbt::ESPBTUUID::from_raw(SERVICE_UUID),
+                                                         espbt::ESPBTUUID::from_raw(COMMAND_CHAR_UUID));
+      auto *notify = this->ble_client_->get_characteristic(espbt::ESPBTUUID::from_raw(SERVICE_UUID),
+                                                        espbt::ESPBTUUID::from_raw(NOTIFICATION_CHAR_UUID));
+      if (command == nullptr || notify == nullptr) {
+        this->fail_("motor does not expose the Motionblinds service");
+        return;
+      }
+      this->command_handle_ = command->handle;
+      this->notify_handle_ = notify->handle;
+
+      auto *descriptor = this->ble_client_->get_config_descriptor(notify->handle);
+      this->config_descriptor_handle_ = descriptor == nullptr ? 0 : descriptor->handle;
+
+      this->set_state_(MotorState::HANDSHAKE);
+      this->handshake_ = Handshake::WAIT_NOTIFY_REGISTRATION;
+
+      const esp_err_t status = esp_ble_gattc_register_for_notify(this->ble_client_->get_gattc_if(),
+                                                                 this->ble_client_->get_remote_bda(), notify->handle);
+      if (status != ESP_OK)
+        this->fail_("could not register for notifications");
+      break;
+    }
+
+    case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
+      if (this->handshake_ != Handshake::WAIT_NOTIFY_REGISTRATION)
+        break;
+      if (param->reg_for_notify.status != ESP_GATT_OK || param->reg_for_notify.handle != this->notify_handle_) {
+        this->fail_("notification registration rejected");
+        break;
+      }
+      // Registering is not the same as having notifications enabled: the
+      // client writes the configuration descriptor while handling this event,
+      // and only its completion means the motor will actually talk to us.
+      this->handshake_ = Handshake::WAIT_DESCRIPTOR_WRITE;
+      break;
+    }
+
+    case ESP_GATTC_WRITE_DESCR_EVT: {
+      if (this->handshake_ != Handshake::WAIT_DESCRIPTOR_WRITE)
+        break;
+      if (this->config_descriptor_handle_ != 0 && param->write.handle != this->config_descriptor_handle_)
+        break;  // some other descriptor
+      if (param->write.status != ESP_GATT_OK) {
+        this->fail_("enabling notifications was rejected");
+        break;
+      }
+
+      // The motor ignores everything until it has been keyed.
+      if (!this->write_command_(Command::SET_KEY, 0)) {
+        this->fail_("could not send the key");
+        break;
+      }
+      this->handshake_ = Handshake::WAIT_BLIND_SETTLE;
+      this->settle_since_ = millis();
+      break;
+    }
+
+    case ESP_GATTC_NOTIFY_EVT: {
+      if (param->notify.handle != this->notify_handle_)
+        break;
+      this->handle_notification_(param->notify.value, param->notify.value_len);
+      break;
+    }
+
+    case ESP_GATTC_WRITE_CHAR_EVT: {
+      if (param->write.handle != this->command_handle_)
+        break;
+      if (param->write.status != ESP_GATT_OK) {
+        ESP_LOGW(TAG, "Command write reported status %d", param->write.status);
+        break;
+      }
+      // Local stack completion only. It is not an acknowledgement from the
+      // motor and says nothing about whether the blind moved.
+      if (this->command_in_flight_ && this->in_flight_.verification == Verification::ACKED) {
+        this->command_in_flight_ = false;
+        this->finish_operation_();
+      }
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+void MotionblindsBLEMotor::handle_notification_(const uint8_t *data, uint16_t length) {
+  uint8_t plain[64];
+  const size_t plain_len = MotionCrypt::decrypt(data, length, plain, sizeof(plain));
+  if (plain_len == 0) {
+    ESP_LOGW(TAG, "Discarding undecryptable notification of %u bytes", static_cast<unsigned>(length));
+    return;
+  }
+
+  Notification notification;
+  if (!parse_notification(plain, plain_len, notification)) {
+    ESP_LOGD(TAG, "Ignoring unrecognised notification");
+    return;
+  }
+  this->apply_notification_(notification);
+}
+
+void MotionblindsBLEMotor::apply_notification_(const Notification &notification) {
+  const uint8_t previous = this->raw_position_;
+
+  this->raw_position_ = notification.position;
+  this->raw_tilt_ = notification.tilt;
+  this->end_positions_ = notification.end_positions;
+  this->has_position_ = true;
+  this->position_fresh_ = true;
+
+  if (notification.has_battery) {
+    this->has_battery_ = true;
+    this->battery_percentage_ = notification.battery_percentage;
+    this->battery_charging_ = notification.charging;
+  }
+  if (notification.has_speed) {
+    this->has_speed_ = true;
+    this->speed_ = notification.speed;
+  }
+  if (notification.has_favorite)
+    this->favorite_set_ = notification.favorite_set;
+
+  if (this->handshake_ == Handshake::WAIT_STATUS && notification.type == NotificationType::STATUS) {
+    this->handshake_ = Handshake::DONE;
+    this->set_state_(MotorState::READY);
+    this->attempts_ = 0;
+    ESP_LOGD(TAG, "Ready, position %u, battery %u%%", static_cast<unsigned>(this->raw_position_),
+             static_cast<unsigned>(this->battery_percentage_));
+  }
+
+  if (this->command_in_flight_) {
+    if (this->in_flight_.verification == Verification::STARTED) {
+      this->command_in_flight_ = false;
+      this->finish_operation_();
+    } else if (this->in_flight_.verification == Verification::SETTLED) {
+      if (this->raw_position_ == this->in_flight_.target) {
+        if (++this->settle_matches_ >= SETTLE_FRAMES || notification.type == NotificationType::FEEDBACK) {
+          this->command_in_flight_ = false;
+          this->moving_ = false;
+          this->travel_direction_ = 0;
+          this->finish_operation_();
+          this->save_position_();
+        }
+      } else {
+        this->settle_matches_ = 0;
+        this->moving_ = true;
+      }
+    }
+  } else if (previous != this->raw_position_) {
+    this->save_position_();
+  }
+
+  this->last_activity_ = millis();
+  this->publish_();
+}
+
+// ------------------------------------------------------------------ state
+
+void MotionblindsBLEMotor::set_state_(MotorState state) {
+  if (this->state_ == state)
+    return;
+  this->state_ = state;
+  this->state_since_ = millis();
+  if (state != MotorState::CONNECTING)
+    this->stuck_reported_ = false;
+  if (state == MotorState::IDLE || state == MotorState::FAILED)
+    this->handshake_ = Handshake::NONE;
+  this->publish_();
+}
+
+void MotionblindsBLEMotor::fail_(const char *reason) {
+  ESP_LOGE(TAG, "Command failed: %s", reason);
+  this->queue_.clear();
+  this->set_state_(MotorState::FAILED);
+  this->abort_();
+  this->operation_since_ = 0;
+  this->lease_count_ = 0;
+}
+
+void MotionblindsBLEMotor::abort_() {
+  this->command_in_flight_ = false;
+  this->moving_ = false;
+  this->travel_direction_ = 0;
+  this->settle_matches_ = 0;
+  this->command_handle_ = 0;
+  this->notify_handle_ = 0;
+  this->config_descriptor_handle_ = 0;
+  this->handshake_ = Handshake::NONE;
+  this->mark_stale_();
+
+  if (this->ble_client_ != nullptr) {
+    this->ble_client_->set_enabled(false);
+    if (this->state_ != MotorState::FAILED && this->state_ != MotorState::IDLE)
+      this->set_state_(MotorState::DISCONNECTING);
+  }
+}
+
+void MotionblindsBLEMotor::on_disconnect_complete(esp_err_t reason) {
+  ESP_LOGD(TAG, "Link torn down (reason %d)", reason);
+  this->command_in_flight_ = false;
+  this->moving_ = false;
+  this->command_handle_ = 0;
+  this->notify_handle_ = 0;
+  this->config_descriptor_handle_ = 0;
+  this->handshake_ = Handshake::NONE;
+  this->connecting_since_ = 0;
+  this->mark_stale_();
+}
+
+void MotionblindsBLEMotor::mark_stale_() {
+  if (this->position_fresh_) {
+    this->position_fresh_ = false;
+    this->save_position_();
+    this->publish_();
+  }
+}
+
+void MotionblindsBLEMotor::save_position_() {
+  PersistedPosition stored{this->raw_position_, this->raw_tilt_, this->has_position_};
+  this->position_pref_.save(&stored);
+}
+
+void MotionblindsBLEMotor::publish_() { this->update_callback_.call(); }
+
+float MotionblindsBLEMotor::window_position() const {
+  if (!this->has_position_)
+    return NAN;
+  return this->range_.to_window(static_cast<float>(this->raw_position_));
+}
+
+optional<uint8_t> MotionblindsBLEMotor::battery_percentage() const {
+  if (!this->has_battery_)
+    return {};
+  return this->battery_percentage_;
+}
+
+optional<bool> MotionblindsBLEMotor::battery_charging() const {
+  if (!this->has_battery_)
+    return {};
+  return this->battery_charging_;
+}
+
+optional<SpeedLevel> MotionblindsBLEMotor::speed() const {
+  if (!this->has_speed_)
+    return {};
+  return this->speed_;
+}
+
+optional<int8_t> MotionblindsBLEMotor::signal_strength() const {
+  if (!this->has_signal_)
+    return {};
+  return this->signal_strength_;
+}
+
+void MotionblindsBLEMotor::set_signal_strength(int8_t rssi) {
+  this->has_signal_ = true;
+  this->signal_strength_ = rssi;
+  this->publish_();
+}
+
+}  // namespace esphome::motionblinds_ble
+
+#endif  // USE_ESP32

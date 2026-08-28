@@ -1,0 +1,46 @@
+# Must fail: an outside_in blind has no single fabric block to slide.
+esphome:
+  name: invalid-fabric-position
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+wifi:
+  ssid: fixture
+  password: fixture-password
+
+external_components:
+  - source:
+      type: local
+      path: ../../esphome/components
+    components: [motionblinds_ble, motionblinds_ble_tdbu]
+
+time:
+  - platform: sntp
+    id: local_time
+
+esp32_ble:
+  max_connections: 2
+
+esp32_ble_tracker:
+
+motionblinds_ble:
+  - {id: m1, mac_address: A4:C1:38:00:00:01, time_id: local_time}
+  - {id: m2, mac_address: A4:C1:38:00:00:02, time_id: local_time}
+
+motionblinds_ble_tdbu:
+  - id: blind
+    top_motor: m1
+    bottom_motor: m2
+    fabric: outside_in
+
+number:
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: blind
+    fabric_position:
+      name: "Should not be allowed"

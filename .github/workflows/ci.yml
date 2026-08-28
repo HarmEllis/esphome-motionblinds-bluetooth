@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-test:
+    name: Host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The frame format and the collision geometry are deliberately free of
+      # ESPHome and Bluetooth dependencies, so both can be tested here rather
+      # than only on hardware.
+      - name: Frame format
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I esphome/components/motionblinds_ble \
+            test/crypt_test.cpp \
+            esphome/components/motionblinds_ble/motionblinds_aes.cpp \
+            esphome/components/motionblinds_ble/motionblinds_crypt.cpp \
+            -o crypt_test
+          ./crypt_test
+
+      - name: Collision geometry
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I . -I esphome/components/motionblinds_ble_tdbu \
+            test/tdbu_test.cpp -o tdbu_test
+          ./tdbu_test
+
+  config:
+    name: Validate configurations
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned minimum tested version and the current release.
+        esphome-version: ["2026.8.1", ""]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install ESPHome
+        run: |
+          if [ -n "${{ matrix.esphome-version }}" ]; then
+            pip install "esphome==${{ matrix.esphome-version }}"
+          else
+            pip install esphome
+          fi
+          esphome version
+
+      - name: Valid configurations
+        run: |
+          for config in fixtures/*.yaml; do
+            echo "::group::${config}"
+            esphome config "${config}"
+            echo "::endgroup::"
+          done
+
+      # These describe configurations that build cleanly but fail on the ESP,
+      # so a silent pass here is a real regression.
+      - name: Rejected configurations
+        run: |
+          for config in fixtures/invalid/*.yaml; do
+            echo "::group::${config}"
+            if esphome config "${config}"; then
+              echo "ERROR: ${config} was accepted but must be rejected"
+              exit 1
+            fi
+            echo "correctly rejected"
+            echo "::endgroup::"
+          done
+
+  compile:
+    name: Compile firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: |
+          mkdir -p .cache
+          docker run --rm -v "$PWD":/config -v "$PWD/.cache":/cache -w /config \
+            ghcr.io/esphome/esphome:latest compile fixtures/tdbu_between_rails.yaml
