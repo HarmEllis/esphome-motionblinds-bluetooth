@@ -181,14 +181,33 @@ class MotionblindsBLEMotor : public Component {
   /// than blank. Signal strength deliberately is not here: a remembered RSSI
   /// describes a radio moment that has passed and says nothing about now, so
   /// it stays empty until the motor is next heard.
+  /// Bumped whenever the layout or the meaning of a field changes. A blob
+  /// written by a different version is discarded rather than reinterpreted.
+  static const uint8_t PERSISTED_VERSION = 1;
+
+  enum PersistedFlags : uint8_t {
+    PERSISTED_HAS_POSITION = 1 << 0,
+    PERSISTED_HAS_BATTERY = 1 << 1,
+    PERSISTED_CHARGING = 1 << 2,
+    PERSISTED_KNOWN_FLAGS = PERSISTED_HAS_POSITION | PERSISTED_HAS_BATTERY | PERSISTED_CHARGING,
+  };
+
+  /// Fixed-width fields only. `bool` was used here before, which stores
+  /// whatever byte the compiler feels like and reads back as true for any
+  /// non-zero value, so a blob that was never written by this component could
+  /// still parse as a confident answer.
   struct PersistedState {
+    uint8_t version;
     uint8_t raw_position;
     uint8_t raw_tilt;
     uint8_t battery_percentage;
-    bool has_position;
-    bool has_battery;
-    bool charging;
+    uint8_t flags;
   } PACKED;
+
+  /// Whether a loaded blob can be believed. The backend already rejects a
+  /// length mismatch, but same-length nonsense -- a key collision, a future
+  /// layout that happens to be five bytes -- reaches us intact.
+  static bool persisted_state_valid(const PersistedState &stored);
 
   bool enqueue_(Command command, uint8_t argument, Verification verification, uint8_t target = 0);
   void start_operation_();

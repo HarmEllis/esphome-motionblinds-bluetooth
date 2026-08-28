@@ -531,6 +531,27 @@ that is the tracker's design, not a bug. Three blinds moving from cold will not
 beat roughly the sum of three connection paths. If that is not fast enough, the
 answer is a second node, not a setting.
 
+## What is remembered across a restart
+
+Each motor keeps its last known position, tilt and battery reading in flash, so
+a blind comes back knowing roughly where its rails are instead of blank. A
+restored position is deliberately *not* treated as fresh: only a frame from the
+current connection can justify a movement decision, because a remote or the
+vendor app can move a rail while the node is powered off.
+
+Two things are worth knowing.
+
+The stored blob carries a format version. When that version changes, the old
+blob is discarded rather than reinterpreted, and every motor comes back not
+knowing where it is until it is next asked. Refreshing the blinds once restores
+them.
+
+The storage key is derived from whichever identifier the motor is configured
+with. Switching a motor between `mac_code` and `mac_address` changes that
+identity, so its stored state is lost once for the same reason. The full address
+cannot be derived from the four-character code at build time, so the two cannot
+be made to agree.
+
 ## Splitting motors across two nodes
 
 Six motors is the ceiling on one ESP32, but it is not always the right number.

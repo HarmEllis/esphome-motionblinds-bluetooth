@@ -303,6 +303,35 @@ State restored during setup therefore has to be announced from the first
 remembering: anything held internally whose only route out depends on an event
 that may never happen will eventually look like data loss.
 
+### A preference key is a global 32-bit namespace, not a private one
+
+Every component on a node shares one flat key space. This component derived its
+key by folding the motor's address into an integer, which for a four-character
+`mac_code` is a small number like 2650 -- and small numbers are exactly what a
+collision looks like. A colliding key reads back either nothing, or another
+component's bytes interpreted at this component's length.
+
+Keys are now an FNV-1a hash of `motionblinds_ble:<version>:<identity>`, so they
+are spread across the space and carry their own namespace and format version.
+
+The identity is whichever of `mac_code` and `mac_address` was configured, and
+those cannot be reconciled: the full address is not knowable from the code at
+build time. Switching a motor from one to the other therefore loses its stored
+position once. Refreshing the blind puts it back.
+
+### A stored blob must say what it is
+
+The blob had no version, no magic and no validation, and used `bool` fields --
+which store whatever byte the compiler chooses and read back as true for
+anything non-zero. It had already grown from three bytes to six, and the ESP32
+backend rejects a length mismatch silently, so an upgrade became "nothing
+stored" with no way to tell that apart from a first boot.
+
+It now carries a version byte and fixed-width flags, and is range-checked before
+it is believed: positions are percentages, tilt is an angle, and charging means
+nothing without a battery reading to qualify. A blob that fails any of those did
+not come from a motor, whatever wrote it.
+
 ### Preferences are only flushed on a clean shutdown
 
 There is no periodic sync. Anything that reboots without getting that far

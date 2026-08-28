@@ -72,6 +72,41 @@ CONF_RECOVER_AFTER = "recover_after"
 CONF_DISCOVERY_ROUNDS = "discovery_rounds"
 CONF_FAST_CONNECT = "fast_connect"
 
+# Bumped when the stored layout changes, so an old blob is never found rather
+# than found and misread.
+PREFERENCE_VERSION = 1
+
+
+def _preference_key(config) -> int:
+    """A namespaced, versioned preference key for one motor.
+
+    Derived from whichever identifier was given rather than from an entity id,
+    because a motor is a plain component and has no entity name to hash.
+
+    Hashed rather than used raw. The earlier version folded the address into an
+    integer, which for a four-character ``mac_code`` is a small number like
+    2650 -- and preference keys share one flat 32-bit namespace with every other
+    component on the node, where small numbers are exactly what a collision
+    looks like. A collision reads back either nothing or another component's
+    bytes at this component's length.
+
+    Switching a motor between ``mac_code`` and ``mac_address`` changes its
+    identity and therefore its key, so its stored position is lost once. The
+    full address is not knowable from the code at build time, so the two cannot
+    be reconciled; refreshing the blind restores the position.
+    """
+    if mac_address := config.get(CONF_MAC_ADDRESS):
+        identity = "mac:" + bytes(mac_address.parts).hex()
+    else:
+        identity = "code:" + config[CONF_MAC_CODE].upper()
+
+    # FNV-1a, for no reason beyond being short and well spread.
+    digest = 0x811C9DC5
+    for byte in f"motionblinds_ble:{PREFERENCE_VERSION}:{identity}".encode():
+        digest ^= byte
+        digest = (digest * 0x01000193) & 0xFFFFFFFF
+    return digest
+
 
 def _validate_mac_code(value):
     """The four-character code the motor advertises, e.g. 0A5A.
@@ -263,15 +298,7 @@ async def to_code(config):
     cg.add(client.set_motor(var))
     cg.add(var.set_ble_client(client))
 
-    # Derived from whichever identifier was given rather than from an entity
-    # id, because a motor is a plain component and has no entity name to hash.
-    # Either one is stable across reflashes and distinct between motors, which
-    # is all a preference key has to be.
-    if mac_address := config.get(CONF_MAC_ADDRESS):
-        address = int.from_bytes(bytes(mac_address.parts), "big")
-    else:
-        address = int(config[CONF_MAC_CODE], 16)
-    cg.add(var.set_preference_key((address ^ (address >> 32)) & 0xFFFFFFFF))
+    cg.add(var.set_preference_key(_preference_key(config)))
 
     time_source = await cg.get_variable(config[CONF_TIME_ID])
     cg.add(var.set_time(time_source))
