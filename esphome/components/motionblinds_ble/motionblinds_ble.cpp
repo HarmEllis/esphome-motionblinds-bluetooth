@@ -21,8 +21,22 @@ static const uint32_t CURTAIN_SETTLE_DELAY_MS = 500;
 /// A write is only unacknowledged for as long as the local stack takes.
 static const uint32_t COMMAND_ACK_TIMEOUT_MS = 5000;
 /// Travel budget, scaled by how far the rail has to go.
-static const uint32_t TRAVEL_TIMEOUT_BASE_MS = 5000;
-static const uint32_t TRAVEL_TIMEOUT_PER_PERCENT_MS = 400;
+///
+/// Generous on purpose. Field logs show a rail taking four seconds to move a
+/// few percent, and a motor that has just finished a move pauses before it
+/// answers again — budgets of seven and eight seconds were declaring perfectly
+/// healthy moves failed. Being slow to give up costs a delayed error message;
+/// being quick to give up throws away a working command.
+static const uint32_t TRAVEL_TIMEOUT_BASE_MS = 8000;
+static const uint32_t TRAVEL_TIMEOUT_PER_PERCENT_MS = 700;
+/// Least time between two commands to the same motor.
+///
+/// A motor asked to move again immediately after finishing tends to accept the
+/// command and then report nothing, which is indistinguishable from ignoring
+/// it. Users of the integration this replaces reached the same conclusion
+/// independently: sending requests in quick succession makes a blind do
+/// nothing at all.
+static const uint32_t MIN_COMMAND_GAP_MS = 1500;
 static const uint8_t MAX_ATTEMPTS = 3;
 static const uint8_t QUEUE_LIMIT = 8;
 /// Two consecutive frames on target before a move counts as settled, so a
@@ -233,6 +247,7 @@ void MotionblindsBLEMotor::start_operation_() {
 void MotionblindsBLEMotor::finish_operation_() {
   this->operation_since_ = 0;
   this->attempts_ = 0;
+  this->last_command_finished_ = millis();
 }
 
 void MotionblindsBLEMotor::acquire_lease() {
@@ -531,6 +546,10 @@ void MotionblindsBLEMotor::dispatch_() {
   }
 
   if (this->queue_.empty())
+    return;
+
+  // Give the motor room between commands; see MIN_COMMAND_GAP_MS.
+  if (this->last_command_finished_ != 0 && now - this->last_command_finished_ < MIN_COMMAND_GAP_MS)
     return;
 
   const PendingCommand command = this->queue_.front();

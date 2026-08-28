@@ -56,6 +56,33 @@ Ask a rail to go where it already is and no frame comes back — there is nothin
 to report. Waiting for an arrival that was never going to be announced times out
 and looks exactly like a failure. Such a command is sent but not waited on.
 
+### Commands in quick succession get ignored
+
+Ask a motor to move again within a second or two of finishing, and it tends to
+accept the command and then report nothing — indistinguishable from ignoring
+it. Users of the Home Assistant integration reached the same conclusion
+independently; sending requests in quick succession makes a blind do nothing at
+all.
+
+**Observed 2026-08-28.** Three blinds driven one after another: the first
+command to each arrived and moved the rail, second commands sent seconds later
+to two of them were accepted and never confirmed.
+
+Consecutive commands to the same motor are therefore spaced.
+
+### Moving several blinds at once starves discovery
+
+The same run: commanding three blinds together left `bank_top` needing three
+full discovery rounds — about ninety seconds — because the other two were
+occupying the radio. The retry rounds absorb it, but a blind commanded while
+others are connecting will be slow rather than broken.
+
+### Rails move slowly, so travel budgets must be generous
+
+A rail took four seconds to move a few percent. Budgets of seven and eight
+seconds were declaring healthy moves failed. Being slow to give up costs a
+delayed error message; being quick to give up throws away a working command.
+
 ### Battery readings are noisy
 
 One motor reported 54, 43 and 51 percent within three minutes. Never conclude

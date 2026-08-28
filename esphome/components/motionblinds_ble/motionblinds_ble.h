@@ -223,6 +223,7 @@ class MotionblindsBLEMotor : public Component {
   uint32_t operation_since_{0};
   uint32_t last_activity_{0};
   uint32_t command_sent_at_{0};
+  uint32_t last_command_finished_{0};
   /// Fixed when the command goes out. Recomputing it from the live position
   /// would shrink the deadline as the rail approaches its target.
   uint32_t command_budget_{0};
