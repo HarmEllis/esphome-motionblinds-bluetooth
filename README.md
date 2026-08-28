@@ -213,35 +213,38 @@ Because of this the component auto-loads `sensor`, `binary_sensor`,
 
 ### What a position means
 
-`0%` is closed and `100%` is open throughout. For the **combined** cover that is
-coverage of the window as a whole. For a **single rail** it addresses the window
-directly:
+`0%` is closed and `100%` is open, as Home Assistant labels every cover. For a
+**single rail** that means how high the rail is sitting:
 
 | Rail | `0%` | `100%` |
 | --- | --- | --- |
-| top | raised to the head | lowered to the foot of its travel |
+| top | lowered to the foot of its travel | raised to the head |
 | bottom | down at the sill | raised to the head of its travel |
 
-These are the same two axes a top-down bottom-up blind card draws, so a preset
-written for such a card means the same thing here.
+So the up arrow raises the rail and the down arrow lowers it, for both rails.
+This is the convention Home Assistant's gateway-based `motion_blinds`
+integration uses for the same blinds, so a top-down bottom-up shade behaves the
+same way here as it does there. Note that the top rail raised is called "open"
+even though that is where it covers the *most* window — the fabric hangs from
+it. That reads oddly, but it is the established convention and matching it
+matters more than fixing the wording.
 
-> **The up arrow on a single rail is not "up".** Home Assistant labels position
-> 100 "open" and draws an up arrow for it. For the top rail, open *is* the
-> lowered end — the fabric hangs from that rail, so lowering it uncovers the
-> window. Pressing open on the device page therefore sends the top rail down.
-> That is not a bug and it is the only convention that keeps a blind card's
-> presets meaning what they say, but it reads backwards on Home Assistant's own
-> cover controls. Drive single rails from a blind card, or from the position
-> slider, rather than the arrows.
+The **combined** cover means coverage of the window as a whole: `0%` fabric
+across the whole window, `100%` fabric collapsed out of the way.
 
-A rail's position is scaled against **its own** travel, not against whatever the
-other rail leaves free. Scaling against the other rail makes a stationary rail's
-reading move whenever the other one travels, and makes a requested 50% land in a
-different place depending on where the other rail happens to be.
+**One deliberate difference from the gateway integration.** There, a rail's
+position is scaled against the travel the *other* rail leaves free, so a
+stationary rail's reported position changes whenever the other one moves, and a
+requested 50% lands somewhere different depending on where the other rail
+happens to be. Here each rail is scaled against its own travel, so a position
+means the same thing every time. Targets are still clamped to keep the rails
+apart, and the cover reports the position actually reached — a clamped request
+reads back as where the rail got to, never as an end stop it never touched.
 
-Targets are still clamped so the rails keep their distance, and the cover then
-reports the position actually reached — a clamped request reads back as the
-position the rail got to, never as a end stop it never touched.
+> **Using a blind card?** Cards for these shades usually draw the top rail's
+> axis as *how far it has come down*, which is the mirror of the position here.
+> Set the card's `invert_top` option for that rail. `tdbu-blind-card` calls it
+> exactly that.
 
 ### Sliding the fabric is a separate entity
 

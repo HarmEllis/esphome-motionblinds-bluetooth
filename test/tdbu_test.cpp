@@ -225,14 +225,13 @@ void test_rail_position_is_absolute() {
   std::printf("absolute rail positions\n");
   const Geometry geometry = full(Fabric::BETWEEN_RAILS, 5.0f, 2.0f);
 
-  // Top rail at the head reads 0, at the sill reads 1, regardless of the other.
-  check_close(geometry.rail_position(Rail::TOP, 0.0f), 0.0f, "top at the head");
-  check_close(geometry.rail_position(Rail::TOP, 100.0f), 1.0f, "top at the sill");
+  // Both rails report how high they are, so the up arrow means up either way.
+  check_close(geometry.rail_position(Rail::TOP, 0.0f), 1.0f, "top raised reads 1");
+  check_close(geometry.rail_position(Rail::TOP, 100.0f), 0.0f, "top lowered reads 0");
   check_close(geometry.rail_position(Rail::TOP, 50.0f), 0.5f, "top halfway");
 
-  // Bottom rail: 0 down at the sill, 1 raised to the head.
-  check_close(geometry.rail_position(Rail::BOTTOM, 100.0f), 0.0f, "bottom at the sill");
-  check_close(geometry.rail_position(Rail::BOTTOM, 0.0f), 1.0f, "bottom at the head");
+  check_close(geometry.rail_position(Rail::BOTTOM, 100.0f), 0.0f, "bottom down at the sill reads 0");
+  check_close(geometry.rail_position(Rail::BOTTOM, 0.0f), 1.0f, "bottom raised reads 1");
   check_close(geometry.rail_position(Rail::BOTTOM, 50.0f), 0.5f, "bottom halfway");
 
   // Round trip through the inverse.
@@ -247,15 +246,15 @@ void test_rail_position_is_absolute() {
   // A partially calibrated rail is scaled against its own travel only.
   const Geometry partial(Fabric::BETWEEN_RAILS, 5.0f, 0.0f, RailRange{20.0f, 60.0f, false},
                          RailRange{40.0f, 90.0f, false});
-  check_close(partial.rail_position(Rail::TOP, 20.0f), 0.0f, "partial top at its own head");
-  check_close(partial.rail_position(Rail::TOP, 60.0f), 1.0f, "partial top at its own end");
-  check_close(partial.rail_position(Rail::BOTTOM, 90.0f), 0.0f, "partial bottom at its own sill");
+  check_close(partial.rail_position(Rail::TOP, 20.0f), 1.0f, "partial top raised to its own head");
+  check_close(partial.rail_position(Rail::TOP, 60.0f), 0.0f, "partial top at its own lowest");
+  check_close(partial.rail_position(Rail::BOTTOM, 90.0f), 0.0f, "partial bottom down at its own sill");
 
   // An inverted motor still reports the same physical thing.
   const Geometry inverted(Fabric::BETWEEN_RAILS, 5.0f, 0.0f, RailRange{0.0f, 100.0f, true},
                           RailRange{0.0f, 100.0f, false});
-  check_close(inverted.rail_position(Rail::TOP, 0.0f), 0.0f, "inverted top at the head still reads 0");
-  check_close(inverted.rail_position(Rail::TOP, 100.0f), 1.0f, "inverted top at the sill still reads 1");
+  check_close(inverted.rail_position(Rail::TOP, 0.0f), 1.0f, "inverted top raised still reads 1");
+  check_close(inverted.rail_position(Rail::TOP, 100.0f), 0.0f, "inverted top lowered still reads 0");
 }
 
 void test_extremes_are_reachable() {

@@ -154,25 +154,27 @@ class Geometry {
     }
   }
 
-  /// Where a rail sits, as a Home Assistant cover position (0-1).
+  /// How high a rail is sitting, as a Home Assistant cover position (0-1):
+  /// 1.0 raised to the top of its own travel, 0.0 lowered to the bottom of it.
+  ///
+  /// The same for both rails, so Home Assistant's own cover arrows move a rail
+  /// in the direction they point. That costs the usual "100 is open" reading
+  /// for the top rail — raised is where it covers the *most*, because the
+  /// fabric hangs from it — but a control that moves the blind the other way
+  /// from the arrow you pressed is worse than a label that reads oddly.
   ///
   /// Deliberately absolute: the scale is the rail's own travel, not the travel
   /// left over by the other rail. Scaling against the other rail made a rail's
-  /// reported position change whenever the *other* one moved, and it made a
+  /// reported position change whenever the *other* one moved, and made a
   /// requested 50% land somewhere different depending on where the other rail
-  /// happened to be. Blind cards and presets address the window, so a position
-  /// has to mean the same thing every time.
-  ///
-  /// For both rails 1.0 is the end that uncovers the window: the top rail
-  /// lowered against the bottom of its travel, the bottom rail raised against
-  /// the top of its own.
+  /// happened to be.
   float rail_position(Rail rail, float window) const {
     const RailRange &range = rail == Rail::TOP ? this->top_ : this->bottom_;
     const float span = range.window_max - range.window_min;
     if (span <= 0.0f)
       return 0.0f;
     const float travelled = clamp((window - range.window_min) / span, 0.0f, 1.0f);
-    return rail == Rail::TOP ? travelled : 1.0f - travelled;
+    return 1.0f - travelled;
   }
 
   /// Inverse of rail_position. The result is a request, not a promise: it still
@@ -180,7 +182,7 @@ class Geometry {
   float rail_window_target(Rail rail, float position) const {
     const RailRange &range = rail == Rail::TOP ? this->top_ : this->bottom_;
     const float span = range.window_max - range.window_min;
-    const float travelled = clamp(rail == Rail::TOP ? position : 1.0f - position, 0.0f, 1.0f);
+    const float travelled = clamp(1.0f - position, 0.0f, 1.0f);
     return range.window_min + travelled * span;
   }
 
