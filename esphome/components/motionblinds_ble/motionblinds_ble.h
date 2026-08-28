@@ -85,6 +85,11 @@ class MotionblindsBLEMotor : public Component {
   void set_handshake_timeout(uint32_t ms) { this->handshake_timeout_ = ms; }
   void set_operation_timeout(uint32_t ms) { this->operation_timeout_ = ms; }
   void set_stuck_connect_timeout(uint32_t ms) { this->stuck_connect_timeout_ = ms; }
+  /// How many bounded discovery attempts before giving up. One window is too
+  /// fragile for a motor that advertises weakly or rarely.
+  void set_discovery_rounds(uint8_t rounds) { this->discovery_rounds_ = rounds; }
+  void set_label(const char *label) { this->label_ = label; }
+  const char *label() const { return this->label_; }
   void set_recover_by_reboot(bool enabled, uint32_t after_ms) {
     this->recover_by_reboot_ = enabled;
     this->recover_after_ = after_ms;
@@ -197,7 +202,9 @@ class MotionblindsBLEMotor : public Component {
   uint32_t operation_timeout_{120000};
   uint32_t stuck_connect_timeout_{60000};
   uint32_t recover_after_{300000};
+  uint8_t discovery_rounds_{3};
   bool recover_by_reboot_{false};
+  const char *label_{""};
 
   MotorState state_{MotorState::IDLE};
   Handshake handshake_{Handshake::NONE};
@@ -211,6 +218,10 @@ class MotionblindsBLEMotor : public Component {
   uint32_t settle_since_{0};
   uint32_t connecting_since_{0};
   uint8_t attempts_{0};
+  uint8_t discovery_round_{0};
+  uint32_t discovery_scanning_ms_{0};
+  uint32_t discovery_last_tick_{0};
+  uint32_t backoff_until_{0};
 
   uint16_t command_handle_{0};
   uint16_t notify_handle_{0};

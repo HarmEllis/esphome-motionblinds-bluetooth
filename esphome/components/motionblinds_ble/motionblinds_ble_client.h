@@ -49,6 +49,15 @@ class MotionblindsBLEClient : public esp32_ble_client::BLEClientBase {
   /// advertisement.
   void set_mac_code(uint16_t code) { this->mac_code_ = code; }
 
+  /// Human-readable identifier used in every log line, so six motors can be
+  /// told apart in one log.
+  void set_label(const char *label) { this->label_ = label; }
+  const char *label() const { return this->label_; }
+
+  /// Forget a learned address so the next matching advertisement is adopted
+  /// again. Only meaningful in mac_code mode.
+  void forget_address();
+
   bool parse_device(const espbt::ESPBTDevice &device) override;
   bool gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
@@ -62,6 +71,7 @@ class MotionblindsBLEClient : public esp32_ble_client::BLEClientBase {
 
   MotionblindsBLEMotor *motor_{nullptr};
   uint32_t mac_code_{NO_MAC_CODE};
+  const char *label_{""};
   bool enabled_{false};
 };
 

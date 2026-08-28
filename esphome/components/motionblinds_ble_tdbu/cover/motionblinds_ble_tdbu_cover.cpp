@@ -47,7 +47,7 @@ void MotionblindsBLETdbuCover::control(const cover::CoverCall &call) {
     if (this->rail_ == CoverRail::COMBINED) {
       this->tdbu_->set_combined_openness(position);
     } else {
-      this->tdbu_->set_rail_openness(this->rail_ == CoverRail::TOP ? Rail::TOP : Rail::BOTTOM, position);
+      this->tdbu_->set_rail_position(this->rail_ == CoverRail::TOP ? Rail::TOP : Rail::BOTTOM, position);
     }
   }
 }
@@ -56,15 +56,18 @@ void MotionblindsBLETdbuCover::update_state_() {
   if (this->tdbu_ == nullptr)
     return;
 
-  float openness;
+  float value;
   if (this->rail_ == CoverRail::COMBINED) {
-    openness = this->tdbu_->combined_openness();
+    value = this->tdbu_->combined_openness();
   } else {
-    openness = this->tdbu_->rail_openness(this->rail_ == CoverRail::TOP ? Rail::TOP : Rail::BOTTOM);
+    value = this->tdbu_->rail_position(this->rail_ == CoverRail::TOP ? Rail::TOP : Rail::BOTTOM);
   }
 
-  if (!std::isnan(openness))
-    this->position = clamp(openness, 0.0f, 1.0f);
+  // Whatever the rail actually reached, including a target the collision guard
+  // had to shorten. Publishing the request instead would tell Home Assistant a
+  // rail is at an end stop it never got to.
+  if (!std::isnan(value))
+    this->position = clamp(value, 0.0f, 1.0f);
 
   const int8_t direction = this->tdbu_->travel_direction();
   if (!this->tdbu_->is_moving() || direction == 0) {

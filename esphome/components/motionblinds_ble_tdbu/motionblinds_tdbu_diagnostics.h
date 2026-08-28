@@ -53,6 +53,7 @@ class MotionblindsBLETdbuDiagnostics : public Component {
 #endif
 #ifdef USE_TEXT_SENSOR
   void set_connection(Rail rail, text_sensor::TextSensor *sensor) { this->rail_(rail).connection = sensor; }
+  void set_status(text_sensor::TextSensor *sensor) { this->status_ = sensor; }
 #endif
 
  protected:
@@ -71,8 +72,12 @@ class MotionblindsBLETdbuDiagnostics : public Component {
 
   RailEntities &rail_(Rail rail) { return rail == Rail::TOP ? this->top_ : this->bottom_; }
   void publish_(Rail rail);
+  void publish_status_();
 
   MotionblindsBLETdbu *tdbu_{nullptr};
+#ifdef USE_TEXT_SENSOR
+  text_sensor::TextSensor *status_{nullptr};
+#endif
   RailEntities top_;
   RailEntities bottom_;
 };

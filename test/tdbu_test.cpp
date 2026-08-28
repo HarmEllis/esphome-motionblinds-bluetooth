@@ -184,14 +184,14 @@ void test_exhaustive_invariant() {
           const float openness = static_cast<float>(percent) / 100.0f;
 
           // Single-rail moves: the other rail stays where it is.
-          const float top_target = geometry.rail_target(Rail::TOP, openness, bottom);
+          const float top_target = geometry.rail_window_target(Rail::TOP, openness);
           const uint8_t top_cmd = geometry.raw_target(Rail::TOP, top_target, bottom);
           const float top_result = geometry.top_range().to_window(static_cast<float>(top_cmd));
           rail_moves++;
           if (bottom - top_result < geometry.min_gap() - 0.001f)
             violations++;
 
-          const float bottom_target = geometry.rail_target(Rail::BOTTOM, openness, top);
+          const float bottom_target = geometry.rail_window_target(Rail::BOTTOM, openness);
           const uint8_t bottom_cmd = geometry.raw_target(Rail::BOTTOM, bottom_target, top);
           const float bottom_result = geometry.bottom_range().to_window(static_cast<float>(bottom_cmd));
           rail_moves++;
@@ -219,6 +219,45 @@ void test_exhaustive_invariant() {
 
 // Asking for the extremes must actually reach them, or the entity is lying
 // about its own scale.
+// A rail's reported position must depend only on that rail. The old scaled
+// version moved a stationary rail's reading whenever the other one travelled.
+void test_rail_position_is_absolute() {
+  std::printf("absolute rail positions\n");
+  const Geometry geometry = full(Fabric::BETWEEN_RAILS, 5.0f, 2.0f);
+
+  // Top rail at the head reads 0, at the sill reads 1, regardless of the other.
+  check_close(geometry.rail_position(Rail::TOP, 0.0f), 0.0f, "top at the head");
+  check_close(geometry.rail_position(Rail::TOP, 100.0f), 1.0f, "top at the sill");
+  check_close(geometry.rail_position(Rail::TOP, 50.0f), 0.5f, "top halfway");
+
+  // Bottom rail: 0 down at the sill, 1 raised to the head.
+  check_close(geometry.rail_position(Rail::BOTTOM, 100.0f), 0.0f, "bottom at the sill");
+  check_close(geometry.rail_position(Rail::BOTTOM, 0.0f), 1.0f, "bottom at the head");
+  check_close(geometry.rail_position(Rail::BOTTOM, 50.0f), 0.5f, "bottom halfway");
+
+  // Round trip through the inverse.
+  for (const Rail rail : {Rail::TOP, Rail::BOTTOM}) {
+    for (int percent = 0; percent <= 100; percent++) {
+      const float position = static_cast<float>(percent) / 100.0f;
+      const float window = geometry.rail_window_target(rail, position);
+      check_close(geometry.rail_position(rail, window), position, "rail position round trip");
+    }
+  }
+
+  // A partially calibrated rail is scaled against its own travel only.
+  const Geometry partial(Fabric::BETWEEN_RAILS, 5.0f, 0.0f, RailRange{20.0f, 60.0f, false},
+                         RailRange{40.0f, 90.0f, false});
+  check_close(partial.rail_position(Rail::TOP, 20.0f), 0.0f, "partial top at its own head");
+  check_close(partial.rail_position(Rail::TOP, 60.0f), 1.0f, "partial top at its own end");
+  check_close(partial.rail_position(Rail::BOTTOM, 90.0f), 0.0f, "partial bottom at its own sill");
+
+  // An inverted motor still reports the same physical thing.
+  const Geometry inverted(Fabric::BETWEEN_RAILS, 5.0f, 0.0f, RailRange{0.0f, 100.0f, true},
+                          RailRange{0.0f, 100.0f, false});
+  check_close(inverted.rail_position(Rail::TOP, 0.0f), 0.0f, "inverted top at the head still reads 0");
+  check_close(inverted.rail_position(Rail::TOP, 100.0f), 1.0f, "inverted top at the sill still reads 1");
+}
+
 void test_extremes_are_reachable() {
   std::printf("extremes\n");
   const Geometry geometries[] = {
@@ -236,14 +275,6 @@ void test_extremes_are_reachable() {
                   "extreme reports back as asked", 0.02f);
     }
 
-    // Per rail, with the other rail parked out of the way.
-    const float bottom = geometry.bottom_range().window_max;
-    for (int percent : {0, 100}) {
-      const float openness = static_cast<float>(percent) / 100.0f;
-      const float target = geometry.rail_target(Rail::TOP, openness, bottom);
-      check_close(geometry.rail_openness(Rail::TOP, target, bottom), openness, "rail extreme reports back as asked",
-                  0.02f);
-    }
   }
 }
 
@@ -256,6 +287,7 @@ int main() {
   test_classification();
   test_clamping();
   test_extremes_are_reachable();
+  test_rail_position_is_absolute();
   test_exhaustive_invariant();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

@@ -154,39 +154,34 @@ class Geometry {
     }
   }
 
-  /// Openness of one rail, scaled to the travel it currently has available so
-  /// that every position the user can ask for is one the rail can reach.
-  float rail_openness(Rail rail, float position, float other_position) const {
-    float lo, hi;
-    this->rail_travel(rail, other_position, lo, hi);
-    if (hi <= lo)
-      return this->fabric_ == Fabric::OUTSIDE_IN ? (rail == Rail::TOP ? 1.0f : 1.0f) : 0.0f;
-
-    const float fraction = clamp((position - lo) / (hi - lo), 0.0f, 1.0f);
-    // Moving the top rail down, or the bottom rail up, always shortens the
-    // segment. Whether that reads as opening or closing is the fabric's call.
-    const bool shortening_is_opening = this->fabric_ == Fabric::BETWEEN_RAILS;
-    if (rail == Rail::TOP)
-      return shortening_is_opening ? fraction : 1.0f - fraction;
-    return shortening_is_opening ? 1.0f - fraction : fraction;
+  /// Where a rail sits, as a Home Assistant cover position (0-1).
+  ///
+  /// Deliberately absolute: the scale is the rail's own travel, not the travel
+  /// left over by the other rail. Scaling against the other rail made a rail's
+  /// reported position change whenever the *other* one moved, and it made a
+  /// requested 50% land somewhere different depending on where the other rail
+  /// happened to be. Blind cards and presets address the window, so a position
+  /// has to mean the same thing every time.
+  ///
+  /// For both rails 1.0 is the end that uncovers the window: the top rail
+  /// lowered against the bottom of its travel, the bottom rail raised against
+  /// the top of its own.
+  float rail_position(Rail rail, float window) const {
+    const RailRange &range = rail == Rail::TOP ? this->top_ : this->bottom_;
+    const float span = range.window_max - range.window_min;
+    if (span <= 0.0f)
+      return 0.0f;
+    const float travelled = clamp((window - range.window_min) / span, 0.0f, 1.0f);
+    return rail == Rail::TOP ? travelled : 1.0f - travelled;
   }
 
-  /// Inverse of rail_openness: the window position a rail should move to.
-  float rail_target(Rail rail, float openness, float other_position) const {
-    openness = clamp(openness, 0.0f, 1.0f);
-    float lo, hi;
-    this->rail_travel(rail, other_position, lo, hi);
-    if (hi <= lo)
-      return clamp(rail == Rail::TOP ? hi : lo, 0.0f, 100.0f);
-
-    const bool shortening_is_opening = this->fabric_ == Fabric::BETWEEN_RAILS;
-    float fraction;
-    if (rail == Rail::TOP) {
-      fraction = shortening_is_opening ? openness : 1.0f - openness;
-    } else {
-      fraction = shortening_is_opening ? 1.0f - openness : openness;
-    }
-    return lo + fraction * (hi - lo);
+  /// Inverse of rail_position. The result is a request, not a promise: it still
+  /// has to go through clamp_target() before it can be commanded.
+  float rail_window_target(Rail rail, float position) const {
+    const RailRange &range = rail == Rail::TOP ? this->top_ : this->bottom_;
+    const float span = range.window_max - range.window_min;
+    const float travelled = clamp(rail == Rail::TOP ? position : 1.0f - position, 0.0f, 1.0f);
+    return range.window_min + travelled * span;
   }
 
   /// Last line of defence for absolute moves and for races where the other

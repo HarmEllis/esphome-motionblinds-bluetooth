@@ -143,10 +143,11 @@ cover:
 | `invert` | no | `false` | The motor is mounted upside down, so its positions run the other way through the window. |
 | `window_min` / `window_max` | no | `0` / `100` | The part of the window this rail actually travels. Needed when the two motors of one blind are each calibrated over their own half. |
 | `disconnect_delay` | no | `15s` | Idle time before the connection is dropped. Only starts once no move is in progress. |
-| `discovery_timeout` | no | `30s` | How long to wait for an advertisement before giving up. |
+| `discovery_timeout` | no | `30s` | Listening time per round. Counted only while the scanner is actually running, because the tracker stops scanning whenever any client is connecting. |
 | `connect_timeout` | no | `20s` | |
 | `handshake_timeout` | no | `8s` | |
 | `operation_timeout` | no | `120s` | Total budget for one request, across every retry. |
+| `discovery_rounds` | no | `3` | Bounded listening rounds before giving up, with a growing pause between them. One window is fragile for a motor that advertises weakly; this is not an unbounded retry. |
 | `stuck_connect_timeout` | no | `60s` | See *Known limitations*. |
 | `recover_by_reboot` | no | `false` | Reboot the node if a connection attempt is unrecoverably stuck. |
 | `recover_after` | no | `5min` | How long to stay stuck before that reboot. |
@@ -192,10 +193,13 @@ motionblinds_ble_tdbu:
       name: "Living blind"
 ```
 
-That one block creates, for **both** rails: battery, signal strength,
-connection status, position freshness, and a refresh button — ten entities
-named after the prefix (`Living blind top battery`, `Living blind bottom
-refresh`, and so on).
+That one block creates a status text for the blind plus, for **both** rails:
+battery, signal strength, connection status, position freshness, and a refresh
+button — eleven entities named after the prefix (`Living blind status`,
+`Living blind top battery`, `Living blind bottom refresh`, and so on).
+
+The status text is the one to watch when nothing moves: it names the rail that
+blocked the move, rather than leaving you to infer it.
 
 The coordinator already knows both motors, so making you declare twenty
 near-identical entities for a three-blind window is busywork. The individual
@@ -207,15 +211,37 @@ Because of this the component auto-loads `sensor`, `binary_sensor`,
 `text_sensor` and `button`, which costs a little flash even if you never use
 `diagnostics:`.
 
-### Positions mean openness
+### What a position means
 
-`0%` is closed and `100%` is open, for every rail and both fabrics, and more
-fabric across the window is always more closed.
+`0%` is closed and `100%` is open throughout. For the **combined** cover that is
+coverage of the window as a whole. For a **single rail** it addresses the window
+directly:
 
-This differs from the Home Assistant integration, which inherits the gateway's
-convention where a raised top rail counts as "open" while it covers the most
-window. If you prefer a rail the other way round, that is what `invert` on the
-motor is for.
+| Rail | `0%` | `100%` |
+| --- | --- | --- |
+| top | raised to the head | lowered to the foot of its travel |
+| bottom | down at the sill | raised to the head of its travel |
+
+These are the same two axes a top-down bottom-up blind card draws, so a preset
+written for such a card means the same thing here.
+
+> **The up arrow on a single rail is not "up".** Home Assistant labels position
+> 100 "open" and draws an up arrow for it. For the top rail, open *is* the
+> lowered end — the fabric hangs from that rail, so lowering it uncovers the
+> window. Pressing open on the device page therefore sends the top rail down.
+> That is not a bug and it is the only convention that keeps a blind card's
+> presets meaning what they say, but it reads backwards on Home Assistant's own
+> cover controls. Drive single rails from a blind card, or from the position
+> slider, rather than the arrows.
+
+A rail's position is scaled against **its own** travel, not against whatever the
+other rail leaves free. Scaling against the other rail makes a stationary rail's
+reading move whenever the other one travels, and makes a requested 50% land in a
+different place depending on where the other rail happens to be.
+
+Targets are still clamped so the rails keep their distance, and the cover then
+reports the position actually reached — a clamped request reads back as the
+position the rail got to, never as a end stop it never touched.
 
 ### Sliding the fabric is a separate entity
 

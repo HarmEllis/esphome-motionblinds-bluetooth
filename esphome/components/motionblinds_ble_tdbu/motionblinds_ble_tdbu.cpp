@@ -26,6 +26,22 @@ void MotionblindsBLETdbu::setup() {
   this->bottom_->add_on_update_callback(on_update);
 }
 
+const char *MotionblindsBLETdbu::status_text() const {
+  if (this->last_error_ != nullptr && this->phase_ == Phase::IDLE)
+    return this->last_error_;
+  switch (this->phase_) {
+    case Phase::REFRESHING:
+      return "checking where both rails are";
+    case Phase::LEADING:
+      return "moving the first rail clear";
+    case Phase::TRAILING:
+      return "moving";
+    case Phase::IDLE:
+    default:
+      return this->positions_known() ? "idle" : "position unknown";
+  }
+}
+
 void MotionblindsBLETdbu::dump_config() {
   ESP_LOGCONFIG(TAG, "Motionblinds BLE top-down bottom-up");
   ESP_LOGCONFIG(TAG,
@@ -53,11 +69,13 @@ bool MotionblindsBLETdbu::positions_known() const {
   return !std::isnan(this->position_(Rail::TOP)) && !std::isnan(this->position_(Rail::BOTTOM));
 }
 
-float MotionblindsBLETdbu::rail_openness(Rail rail) const {
-  if (!this->positions_known())
+float MotionblindsBLETdbu::rail_position(Rail rail) const {
+  const float window = this->position_(rail);
+  if (std::isnan(window))
     return NAN;
-  const Rail other = rail == Rail::TOP ? Rail::BOTTOM : Rail::TOP;
-  return this->geometry_.rail_openness(rail, this->position_(rail), this->position_(other));
+  // Only this rail's own position is needed, so it stays stable when the other
+  // one moves.
+  return this->geometry_.rail_position(rail, window);
 }
 
 float MotionblindsBLETdbu::combined_openness() const {
@@ -97,12 +115,12 @@ int8_t MotionblindsBLETdbu::travel_direction() const {
 
 // --------------------------------------------------------------- requests
 
-void MotionblindsBLETdbu::set_rail_openness(Rail rail, float openness) {
+void MotionblindsBLETdbu::set_rail_position(Rail rail, float position) {
   Intent intent;
   intent.active = true;
   intent.combined = false;
   intent.rail = rail;
-  intent.length = openness;  // resolved against live geometry at dispatch
+  intent.length = position;  // resolved against live geometry at dispatch
   this->submit_(intent);
 }
 
@@ -183,6 +201,7 @@ void MotionblindsBLETdbu::stop_all() {
 
 void MotionblindsBLETdbu::begin_() {
   this->operation_since_ = millis();
+  this->last_error_ = nullptr;
   this->acquire_leases_();
 
   // A remembered position is not evidence of where a rail is now: a remote or
@@ -215,9 +234,12 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
     target_top = placement.top;
     target_bottom = placement.bottom;
   } else if (this->pending_.rail == Rail::TOP) {
-    target_top = this->geometry_.rail_target(Rail::TOP, this->pending_.length, bottom);
+    // Clamp here rather than at dispatch, so the direction classification and
+    // the clearance wait both reason about the target the rail will really be
+    // given. A wait on an unreachable target would never be satisfied.
+    target_top = this->geometry_.clamp_target(Rail::TOP, this->geometry_.rail_window_target(Rail::TOP, this->pending_.length), bottom);
   } else {
-    target_bottom = this->geometry_.rail_target(Rail::BOTTOM, this->pending_.length, top);
+    target_bottom = this->geometry_.clamp_target(Rail::BOTTOM, this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.length), top);
   }
 
   const Direction top_direction = Geometry::classify(Rail::TOP, top, target_top);
@@ -350,7 +372,8 @@ void MotionblindsBLETdbu::finish_() {
 }
 
 void MotionblindsBLETdbu::abandon_(const char *reason) {
-  ESP_LOGE(TAG, "Move abandoned: %s. The other rail was not moved.", reason);
+  ESP_LOGE(TAG, "Move abandoned: %s", reason);
+  this->last_error_ = reason;
   this->finish_();
 }
 
@@ -415,9 +438,21 @@ void MotionblindsBLETdbu::loop() {
     case Phase::REFRESHING:
       if (this->fresh_(Rail::TOP) && this->fresh_(Rail::BOTTOM)) {
         this->plan_and_dispatch_();
-      } else if (now - this->phase_since_ > this->clearance_timeout_) {
-        this->abandon_("could not establish where both rails are");
+        break;
       }
+      // Both rail positions are needed before anything may move. If one motor
+      // has already given up there is nothing left to wait for, and sitting out
+      // the full clearance timeout only hides which rail is the problem.
+      for (const Rail rail : {Rail::TOP, Rail::BOTTOM}) {
+        MotionblindsBLEMotor *motor = this->motor_(rail);
+        if (motor != nullptr && motor->state() == esphome::motionblinds_ble::MotorState::FAILED) {
+          this->abandon_(rail == Rail::TOP ? "the top rail could not be reached, so the bottom rail was not moved"
+                                           : "the bottom rail could not be reached, so the top rail was not moved");
+          return;
+        }
+      }
+      if (now - this->phase_since_ > this->clearance_timeout_)
+        this->abandon_("could not establish where both rails are");
       break;
 
     case Phase::LEADING:

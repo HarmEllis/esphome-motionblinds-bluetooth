@@ -14,12 +14,24 @@ void MotionblindsBLETdbuDiagnostics::setup() {
   this->tdbu_->add_on_update_callback([this]() {
     this->publish_(Rail::TOP);
     this->publish_(Rail::BOTTOM);
+    this->publish_status_();
   });
   this->publish_(Rail::TOP);
   this->publish_(Rail::BOTTOM);
+  this->publish_status_();
 }
 
 void MotionblindsBLETdbuDiagnostics::dump_config() { ESP_LOGCONFIG(TAG, "Motionblinds BLE TDBU diagnostics"); }
+
+void MotionblindsBLETdbuDiagnostics::publish_status_() {
+#ifdef USE_TEXT_SENSOR
+  if (this->status_ == nullptr || this->tdbu_ == nullptr)
+    return;
+  const char *state = this->tdbu_->status_text();
+  if (this->status_->state != state)
+    this->status_->publish_state(state);
+#endif
+}
 
 void MotionblindsBLETdbuDiagnostics::publish_(Rail rail) {
   auto *motor = this->tdbu_ == nullptr ? nullptr : this->tdbu_->motor(rail);

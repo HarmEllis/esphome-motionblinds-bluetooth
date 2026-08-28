@@ -59,6 +59,7 @@ CONF_SIGNAL_STRENGTH = "signal_strength"
 CONF_CONNECTION_STATUS = "connection_status"
 CONF_POSITION_FRESH = "position_fresh"
 CONF_REFRESH = "refresh"
+CONF_STATUS = "status"
 CONF_TOP_MOTOR = "top_motor"
 CONF_BOTTOM_MOTOR = "bottom_motor"
 CONF_FABRIC = "fabric"
@@ -77,6 +78,8 @@ def _diagnostics_schema():
     schema = {
         cv.GenerateID(): cv.declare_id(MotionblindsBLETdbuDiagnostics),
         cv.Required(CONF_NAME): cv.string,
+        # Says what the blind is doing, or why the last move did not happen.
+        cv.GenerateID(CONF_STATUS): cv.declare_id(text_sensor.TextSensor),
     }
     for rail in _RAILS:
         schema[cv.GenerateID(f"{rail}_{CONF_BATTERY_LEVEL}")] = cv.declare_id(sensor.Sensor)
@@ -152,6 +155,14 @@ async def _diagnostics_to_code(parent, config):
     diagnostics = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(diagnostics, {})
     cg.add(diagnostics.set_tdbu(parent))
+
+    status = await text_sensor.new_text_sensor(
+        text_sensor.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC)(
+            {CONF_NAME: f"{prefix} status"}
+        )
+        | {CONF_ID: config[CONF_STATUS]}
+    )
+    cg.add(diagnostics.set_status(status))
 
     for rail in _RAILS:
         rail_enum = RAILS[rail.upper()]

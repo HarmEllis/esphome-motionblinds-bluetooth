@@ -68,6 +68,7 @@ CONF_OPERATION_TIMEOUT = "operation_timeout"
 CONF_STUCK_CONNECT_TIMEOUT = "stuck_connect_timeout"
 CONF_RECOVER_BY_REBOOT = "recover_by_reboot"
 CONF_RECOVER_AFTER = "recover_after"
+CONF_DISCOVERY_ROUNDS = "discovery_rounds"
 
 
 def _validate_mac_code(value):
@@ -141,7 +142,7 @@ CONFIG_SCHEMA = cv.All(
                 CONF_HANDSHAKE_TIMEOUT, default="8s"
             ): cv.positive_time_period_milliseconds,
             cv.Optional(
-                CONF_OPERATION_TIMEOUT, default="120s"
+                CONF_OPERATION_TIMEOUT, default="180s"
             ): cv.positive_time_period_milliseconds,
             cv.Optional(
                 CONF_STUCK_CONNECT_TIMEOUT, default="60s"
@@ -150,6 +151,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(
                 CONF_RECOVER_AFTER, default="5min"
             ): cv.positive_time_period_milliseconds,
+            # A single listening window is fragile for a motor that advertises
+            # weakly; several bounded rounds are not the same thing as an
+            # unbounded retry.
+            cv.Optional(CONF_DISCOVERY_ROUNDS, default=3): cv.int_range(min=1, max=10),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -238,6 +243,8 @@ async def to_code(config):
     # so that connections are serialised by the tracker and the motor's address
     # type is learned from its advertisement.
     cg.add(client.set_auto_connect(True))
+    # Both halves log under the motor's own id, so six motors stay legible.
+    cg.add(client.set_label(str(config[CONF_ID])))
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
@@ -259,7 +266,9 @@ async def to_code(config):
     time_source = await cg.get_variable(config[CONF_TIME_ID])
     cg.add(var.set_time(time_source))
 
+    cg.add(var.set_label(str(config[CONF_ID])))
     cg.add(var.set_blind_type(config[CONF_BLIND_TYPE]))
+    cg.add(var.set_discovery_rounds(config[CONF_DISCOVERY_ROUNDS]))
     cg.add(
         var.set_rail_range(
             config[CONF_WINDOW_MIN], config[CONF_WINDOW_MAX], config[CONF_INVERT]

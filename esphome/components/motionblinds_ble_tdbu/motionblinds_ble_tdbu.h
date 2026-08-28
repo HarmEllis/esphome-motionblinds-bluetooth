@@ -52,8 +52,9 @@ class MotionblindsBLETdbu : public Component {
   const Geometry &geometry() const { return this->geometry_; }
 
   // ------------------------------------------------------------- commands
-  /// Move one rail to an openness between 0 (closed) and 1 (open).
-  void set_rail_openness(Rail rail, float openness);
+  /// Move one rail to a Home Assistant cover position (0-1), addressing the
+  /// window rather than the travel the other rail happens to leave.
+  void set_rail_position(Rail rail, float position);
   /// Move the blind as a whole.
   void set_combined_openness(float openness);
   /// Slide the fabric block without changing how much of it is showing.
@@ -66,11 +67,16 @@ class MotionblindsBLETdbu : public Component {
   MotionblindsBLEMotor *motor(Rail rail) const { return this->motor_(rail); }
 
   bool positions_known() const;
-  float rail_openness(Rail rail) const;
+  float rail_position(Rail rail) const;
   float combined_openness() const;
   /// Where the middle of the segment between the rails currently sits.
   float fabric_centre() const;
   bool is_moving() const;
+  /// Plain-language description of what the blind is doing, or why the last
+  /// move did not happen. Surfaced as a diagnostic text sensor because "nothing
+  /// moved and nothing was reported" is the failure this component exists to
+  /// eliminate.
+  const char *status_text() const;
   /// Which way the blind as a whole is heading: -1 opening, +1 closing, 0 idle.
   int8_t travel_direction() const;
 
@@ -152,6 +158,7 @@ class MotionblindsBLETdbu : public Component {
   uint32_t phase_since_{0};
   uint32_t operation_since_{0};
   bool leases_held_{false};
+  const char *last_error_{nullptr};
 
   Rail lead_{Rail::TOP};
   Rail trail_{Rail::TOP};
