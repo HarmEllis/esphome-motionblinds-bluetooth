@@ -319,7 +319,10 @@ bool MotionblindsBLETdbu::command_(Rail rail, float window_target) {
   const uint8_t raw = this->geometry_.raw_target(rail, window_target, this->position_(other));
   const float achieved = motor->rail_range().to_window(static_cast<float>(raw));
 
-  ESP_LOGD(TAG, "Commanding %s rail to %.1f%% of the window (raw %u)", rail == Rail::TOP ? "top" : "bottom", achieved,
+  // Deliberately INFO: what was actually asked of a motor is the first thing
+  // anyone needs when a blind does not move, and debug lines do not reach the
+  // Home Assistant log.
+  ESP_LOGI(TAG, "Commanding %s rail to %.1f%% of the window (raw %u)", rail == Rail::TOP ? "top" : "bottom", achieved,
            static_cast<unsigned>(raw));
   return motor->request_position(achieved);
 }
@@ -341,7 +344,7 @@ void MotionblindsBLETdbu::advance_() {
   if (gap < this->start_gap_ && !settled)
     return;
 
-  ESP_LOGD(TAG, "First rail has opened a %.0f%% gap, starting the second", gap);
+  ESP_LOGI(TAG, "First rail has opened a %.0f%% gap, starting the second", gap);
   if (!this->command_(this->trail_, this->trail_target_)) {
     this->abandon_("the second rail did not accept its command");
     return;

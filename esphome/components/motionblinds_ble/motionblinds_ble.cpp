@@ -452,7 +452,8 @@ void MotionblindsBLEMotor::dispatch_() {
         // there. These motors report when something changes, so a move that
         // finished quietly, or one whose remembered start position was wrong,
         // looks identical to one that never happened. Ask before condemning it.
-        ESP_LOGD(TAG, "[%s] No arrival reported yet, asking where it is", this->label_);
+        ESP_LOGI(TAG, "[%s] No arrival reported after %us, asking where it is", this->label_,
+                 static_cast<unsigned>(this->command_budget_ / 1000));
         this->settle_rechecked_ = true;
         this->command_sent_at_ = now;
         this->command_budget_ = COMMAND_ACK_TIMEOUT_MS;
@@ -685,7 +686,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
     this->handshake_ = Handshake::DONE;
     this->set_state_(MotorState::READY);
     this->attempts_ = 0;
-    ESP_LOGD(TAG, "[%s] Ready, position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
+    ESP_LOGI(TAG, "[%s] Ready, position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
              static_cast<unsigned>(this->battery_percentage_));
   }
 
@@ -696,6 +697,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
     } else if (this->in_flight_.verification == Verification::SETTLED) {
       if (this->raw_position_ == this->in_flight_.target) {
         if (++this->settle_matches_ >= SETTLE_FRAMES || notification.type == NotificationType::FEEDBACK) {
+          ESP_LOGI(TAG, "[%s] Reached %u", this->label_, static_cast<unsigned>(this->raw_position_));
           this->command_in_flight_ = false;
           this->moving_ = false;
           this->travel_direction_ = 0;
