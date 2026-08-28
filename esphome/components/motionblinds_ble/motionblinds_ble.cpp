@@ -628,14 +628,30 @@ void MotionblindsBLEMotor::dispatch_() {
         break;
 
       case Verification::STARTED:
-        if (now - this->command_sent_at_ > this->command_budget_)
+        if (now - this->command_sent_at_ <= this->command_budget_)
+          break;
+        // Asked again rather than failed outright, for the same reason the
+        // handshake repeats its own status query: the question is a write
+        // without a response and those get lost. This path had no retry at all,
+        // which was harmless while the handshake always asked first -- but
+        // fast_connect skips that, so a refresh button on a lossy link became a
+        // single unanswered question and an error.
+        if (this->recheck_attempts_ >= MAX_SETTLE_RECHECKS) {
+          this->fail_("motor did not answer the status query");
+          break;
+        }
+        ESP_LOGI(TAG, "[%s] No answer to the status query, asking again (attempt %u of %u)", this->label_,
+                 static_cast<unsigned>(this->recheck_attempts_ + 1), static_cast<unsigned>(MAX_SETTLE_RECHECKS));
+        this->recheck_attempts_++;
+        this->command_sent_at_ = now;
+        if (!this->write_command_(this->in_flight_.command, this->in_flight_.argument))
           this->fail_("motor did not answer the status query");
         break;
 
       case Verification::SETTLED:
         if (now - this->command_sent_at_ <= this->command_budget_)
           break;
-        if (this->settle_recheck_attempts_ >= MAX_SETTLE_RECHECKS) {
+        if (this->recheck_attempts_ >= MAX_SETTLE_RECHECKS) {
           this->fail_("motor never reached the commanded position");
           break;
         }
@@ -650,9 +666,9 @@ void MotionblindsBLEMotor::dispatch_() {
         // rails that were sitting exactly where they had been told to go.
         ESP_LOGI(TAG, "[%s] No arrival reported after %us, asking where it is (attempt %u of %u)", this->label_,
                  static_cast<unsigned>(this->command_budget_ / 1000),
-                 static_cast<unsigned>(this->settle_recheck_attempts_ + 1),
+                 static_cast<unsigned>(this->recheck_attempts_ + 1),
                  static_cast<unsigned>(MAX_SETTLE_RECHECKS));
-        this->settle_recheck_attempts_++;
+        this->recheck_attempts_++;
         this->settle_rechecked_ = true;
         this->command_sent_at_ = now;
         this->command_budget_ = COMMAND_ACK_TIMEOUT_MS;
@@ -689,7 +705,7 @@ void MotionblindsBLEMotor::dispatch_() {
   this->command_sent_at_ = now;
   this->settle_matches_ = 0;
   this->settle_rechecked_ = false;
-  this->settle_recheck_attempts_ = 0;
+  this->recheck_attempts_ = 0;
   this->last_activity_ = now;
 
   // A rail already standing on the requested position has nothing to report,
