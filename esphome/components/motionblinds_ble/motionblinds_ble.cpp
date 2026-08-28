@@ -319,34 +319,44 @@ void MotionblindsBLEMotor::loop() {
       break;
     }
 
-    case MotorState::CONNECTING:
-      if (this->connecting_since_ != 0 && now - this->connecting_since_ > this->stuck_connect_timeout_) {
-        // There is no way to cancel an outstanding esp_ble_gattc_open through
-        // the public API, and forcing our own state to IDLE would risk leaking
-        // a link if the connect lands late. All we can do is be loud, and
-        // optionally reboot.
-        if (!this->recover_by_reboot_) {
-          this->fail_("stuck connecting, no connection event from the stack");
-          break;
-        }
-        // Rebooting is the only remaining recovery and it is deliberately
-        // delayed, so this stays in CONNECTING until then. Failing here
-        // instead would leave the state machine somewhere the reboot check
-        // never runs again.
-        if (!this->stuck_reported_) {
-          ESP_LOGE(TAG, "[%s] Stuck connecting with no way to cancel it; will reboot if it does not clear", this->label_);
-          this->stuck_reported_ = true;
-          this->publish_();
-        }
-        if (now - this->connecting_since_ > this->recover_after_) {
-          ESP_LOGE(TAG, "[%s] Stuck connecting for %us, rebooting to recover", this->label_,
-                   static_cast<unsigned>((now - this->connecting_since_) / 1000));
-          App.safe_reboot();
-        }
-      } else if (now - this->state_since_ > this->connect_timeout_) {
-        this->fail_("connect timed out");
+    case MotorState::CONNECTING: {
+      const bool open_pending =
+          this->ble_client_ != nullptr && this->ble_client_->state() == espbt::ClientState::CONNECTING;
+
+      if (!open_pending) {
+        // The link is up; what is left is service discovery, which either
+        // completes or errors out, so an ordinary deadline is safe here.
+        if (now - this->state_since_ > this->connect_timeout_)
+          this->fail_("connected, but service discovery never finished");
+        break;
+      }
+
+      // An outstanding esp_ble_gattc_open cannot be cancelled through the
+      // public API, and giving up on it does not stop it: the base client stays
+      // in CONNECTING, and the tracker will not scan while any client is. So
+      // failing at the shorter connect deadline punished every motor on the
+      // node for one slow connect, and left the reboot recovery below
+      // permanently out of reach. While the open is pending, the stuck deadline
+      // is the only one that applies.
+      if (this->connecting_since_ == 0 || now - this->connecting_since_ <= this->stuck_connect_timeout_)
+        break;
+
+      if (!this->recover_by_reboot_) {
+        this->fail_("stuck connecting, no connection event from the stack");
+        break;
+      }
+      if (!this->stuck_reported_) {
+        ESP_LOGE(TAG, "[%s] Stuck connecting with no way to cancel it; will reboot if it does not clear", this->label_);
+        this->stuck_reported_ = true;
+        this->publish_();
+      }
+      if (now - this->connecting_since_ > this->recover_after_) {
+        ESP_LOGE(TAG, "[%s] Stuck connecting for %us, rebooting to recover", this->label_,
+                 static_cast<unsigned>((now - this->connecting_since_) / 1000));
+        App.safe_reboot();
       }
       break;
+    }
 
     case MotorState::HANDSHAKE:
       if (now - this->state_since_ > this->handshake_timeout_) {
@@ -759,7 +769,8 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
   this->position_fresh_ = true;
 
   if (notification.has_battery) {
-    const bool changed = !this->has_battery_ || this->battery_percentage_ != notification.battery_percentage;
+    const bool changed = !this->has_battery_ || this->battery_percentage_ != notification.battery_percentage ||
+                         this->battery_charging_ != notification.charging;
     this->has_battery_ = true;
     this->battery_percentage_ = notification.battery_percentage;
     this->battery_charging_ = notification.charging;

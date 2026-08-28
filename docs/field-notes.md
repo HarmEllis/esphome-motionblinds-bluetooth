@@ -139,6 +139,15 @@ The dispatch loop calls all clients with no early exit, and `already_discovered_
 is used solely to deduplicate log lines — it does not suppress dispatch. If a
 motor is not being discovered, the advertisement genuinely is not arriving.
 
+### A pending connect cannot be abandoned
+
+`esp_ble_gattc_open()` has no cancel through ESPHome's public API, and giving up
+on it locally does not stop it — the base client stays in `CONNECTING`, and the
+tracker will not scan while any client is. So a short per-attempt deadline on a
+slow connect does not just fail that motor: it stalls discovery for every motor
+on the node while the open is still outstanding. Only the long stuck-connect
+deadline applies while an open is pending.
+
 ### `on_disconnect_complete()` is protected
 
 It is reachable only from a `BLEClientBase` subclass, not from a `BLEClientNode`.

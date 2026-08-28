@@ -227,6 +227,15 @@ void MotionblindsBLETdbu::begin_() {
 }
 
 void MotionblindsBLETdbu::plan_and_dispatch_() {
+  // Consume the request up front. Every early return below — already there, a
+  // rail that would not take its command — used to leave it active, and the
+  // idle branch of loop() would immediately start planning it again: a blind
+  // already at its target woke both motors forever.
+  //
+  // A genuinely newer request submitted while this one runs replaces
+  // pending_ with a later generation and is not lost by this.
+  this->pending_.active = false;
+
   const float top = this->position_(Rail::TOP);
   const float bottom = this->position_(Rail::BOTTOM);
 
@@ -304,7 +313,6 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
 
   this->phase_ = this->has_trail_ ? Phase::LEADING : Phase::TRAILING;
   this->phase_since_ = millis();
-  this->pending_.active = false;
 }
 
 bool MotionblindsBLETdbu::command_(Rail rail, float window_target) {
