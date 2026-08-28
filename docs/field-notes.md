@@ -285,6 +285,24 @@ which runs once the API is connected. Note that `ESP_LOGCONFIG` is compiled out
 at log level INFO, so a condition someone needs to see while running at INFO
 must be a warning, not a config line.
 
+### Restored is not the same as published
+
+A restored position that nobody publishes is indistinguishable from a lost one,
+and that cost most of an evening. `setup()` read the stored value and logged it
+correctly for every motor while every cover in Home Assistant still read 100% --
+the value `Cover` is constructed with.
+
+The cause is setup ordering. The coordinator registers its update callback on
+each motor from its own `setup()`, and ESPHome does not promise which component
+is set up first, so a publish from the motor's `setup()` can reach nobody. There
+was no second chance: nothing republished until a BLE frame arrived, which on a
+quiet blind can be hours.
+
+State restored during setup therefore has to be announced from the first
+`loop()` pass, once every component exists. The general shape is worth
+remembering: anything held internally whose only route out depends on an event
+that may never happen will eventually look like data loss.
+
 ### Preferences are only flushed on a clean shutdown
 
 There is no periodic sync. Anything that reboots without getting that far

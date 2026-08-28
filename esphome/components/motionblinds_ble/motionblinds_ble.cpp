@@ -309,6 +309,18 @@ void MotionblindsBLEMotor::release_lease() {
 void MotionblindsBLEMotor::loop() {
   const uint32_t now = millis();
 
+  // Announce the restored state once, here rather than from setup(). Components
+  // are set up in an order this one does not control, and the coordinator
+  // registers its update callback in its own setup(), so a publish from ours
+  // can reach nobody. Nothing published it afterwards either, which left a
+  // motor holding a perfectly good restored position while its cover sat on the
+  // 100% every cover starts at -- restored and invisible, which reads exactly
+  // like not restored at all.
+  if (!this->announced_) {
+    this->announced_ = true;
+    this->publish_();
+  }
+
   this->reconcile_state_();
 
   switch (this->state_) {

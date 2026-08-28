@@ -236,6 +236,8 @@ class MotionblindsBLEMotor : public Component {
   /// never be read from Home Assistant or the ESPHome dashboard.
   /// Shared by both re-ask paths: the settle recheck and the status query.
   uint8_t recheck_attempts_{0};
+  /// Whether the restored state has been announced yet. See loop().
+  bool announced_{false};
   bool restored_{false};
   bool save_failed_{false};
   const char *label_{""};
