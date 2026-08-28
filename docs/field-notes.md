@@ -46,9 +46,14 @@ motors. So a lost write is completely silent.
 Two hundred milliseconds after the repeat. The earlier "handshake timed out"
 failures at 13–18 seconds were very likely all lost writes.
 
-One repeat, at a relaxed interval, is the right amount. Three in quick
-succession was tried (v0.0.14) and is reported by other users to make matters
-worse rather than better.
+The library's own maintainer proposes the same remedy for this fault
+([LennP/motionblindsble#5](https://github.com/LennP/motionblindsble/pull/5),
+against core#153218): **three attempts, three seconds apart**, repeating only
+the status query — not the key. Those are the numbers used here.
+
+Related settings in that library, for reference: `SETTING_CONNECTION_DELAY` is
+0.2 s and `SETTING_NOTIFICATION_DELAY` is 0.5 s. There is no two-millisecond
+delay anywhere, despite the recollection that started this search.
 
 ### A motor at its target says nothing
 
@@ -70,12 +75,24 @@ to two of them were accepted and never confirmed.
 
 Consecutive commands to the same motor are therefore spaced.
 
-### Moving several blinds at once starves discovery
+### Moving several blinds at once is slow, and the reason is not obvious
 
-The same run: commanding three blinds together left `bank_top` needing three
-full discovery rounds — about ninety seconds — because the other two were
-occupying the radio. The retry rounds absorb it, but a blind commanded while
-others are connecting will be slow rather than broken.
+Commanding three blinds together left `bank_top` needing three full discovery
+rounds — about ninety seconds — before it was heard at -78 dBm.
+
+The tempting explanation, that the scanner is stopped while other clients
+connect, does not hold: discovery time is counted only while the scanner is
+actually running, so a motor waiting its turn does not burn its budget. What
+remains is that a radio which is scanning *and* servicing established
+connections misses advertisements it would otherwise catch, and that this motor
+is a weak advertiser to begin with.
+
+Not addressed in firmware. A global cap on how many motors may be active at
+once was considered and rejected: with a coordinator that needs both rails
+before it can move, two blinds each holding one slot deadlock until their
+operation deadlines expire. The effective lever is `optimistic`, which wakes
+only the rails that actually move and so halves the radio load for the same
+work.
 
 ### Rails move slowly, so travel budgets must be generous
 

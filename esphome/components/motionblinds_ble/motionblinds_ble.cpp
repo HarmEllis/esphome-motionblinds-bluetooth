@@ -42,15 +42,14 @@ static const uint8_t QUEUE_LIMIT = 8;
 /// Two consecutive frames on target before a move counts as settled, so a
 /// single frame taken while the rail passes through cannot end the wait.
 static const uint8_t SETTLE_FRAMES = 2;
-/// How long to wait for a status frame before asking once more, in case the
-/// unacknowledged write was simply lost.
+/// How long to wait for a status frame before asking again, and how many times.
 ///
-/// Only once. A motor that has gone quiet after being keyed does not come back
-/// because it was asked again — the remedy that works in the field is a fresh
-/// connection, and piling on writes is reported to make matters worse rather
-/// than better.
-static const uint32_t HANDSHAKE_RETRY_MS = 4000;
-static const uint8_t MAX_HANDSHAKE_ATTEMPTS = 2;
+/// Three attempts three seconds apart, matching the fix the library's own
+/// maintainer proposed for this exact fault (LennP/motionblindsble#5, against
+/// home-assistant/core#153218). Only the query is repeated — that PR does not
+/// re-send the key, and neither does this.
+static const uint32_t HANDSHAKE_RETRY_MS = 3000;
+static const uint8_t MAX_HANDSHAKE_ATTEMPTS = 3;
 
 const char *motor_state_to_string(MotorState state) {
   switch (state) {
@@ -499,7 +498,6 @@ void MotionblindsBLEMotor::drive_handshake_() {
 
   ESP_LOGI(TAG, "[%s] No status yet, asking again (attempt %u of %u)", this->label_,
            static_cast<unsigned>(this->handshake_attempts_ + 1), static_cast<unsigned>(MAX_HANDSHAKE_ATTEMPTS));
-  this->write_command_(Command::SET_KEY, 0);
   this->write_command_(Command::STATUS_QUERY, 0);
   this->handshake_retry_at_ = now + HANDSHAKE_RETRY_MS;
 }
