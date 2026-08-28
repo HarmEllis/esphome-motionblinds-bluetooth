@@ -211,6 +211,13 @@ while the blind travels.
 > while connected. What optimistic mode gives up is the guarantee that the
 > picture was correct *before* the move started. Press a rail's refresh button,
 > or command it, to resynchronise.
+
+The option belongs to the blind rather than the motor because a single motor
+has nothing to skip. A `cover: - platform: motionblinds_ble` sends its position
+command as soon as its own connection is up; it never waits on a second motor,
+so it is already as responsive as optimistic mode makes a paired blind. The wait
+exists only in the coordinator, which needs both rail positions before it can
+decide what may move and in which order.
 | `clearance_timeout` | no | `60s` | How long the second rail waits for the first to make room. |
 | `lease_timeout` | no | `180s` | Upper bound on holding both connections open. |
 | `diagnostics` | no | | Builds the per-rail diagnostic entities; see below. |
