@@ -372,11 +372,15 @@ button:
 `connected`, `disconnecting` or `error`. Waiting on it is how an automation can
 tell a real failure from a slow motor.
 
-A rail whose position is not known at all — a motor that has never reported,
-on a node with nothing stored in flash — publishes no cover state, so the entity
-reads `unknown` rather than claiming a position. A cover position is a plain
-number with no room for "I do not know", and the value it would otherwise carry
-reads as fully open.
+A rail whose position is not known at all — a motor that has never reported, on
+a node with nothing stored in flash — has nothing honest to publish. A cover
+position is a plain number with no room for "I do not know", and the value the
+entity carries until something is written to it reads as **fully open**. Treat
+`position_fresh` and the blind's status text as the authoritative signals, not
+the cover, until a rail has been heard from once.
+
+Positions are committed to flash as soon as a move completes, so this window is
+normally only a node's very first boot.
 
 `position_fresh` reports whether the position was actually observed during the
 current connection. The cover's own `assumed_state` flag cannot express this:

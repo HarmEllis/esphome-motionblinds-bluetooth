@@ -781,6 +781,13 @@ void MotionblindsBLEMotor::mark_stale_() {
 void MotionblindsBLEMotor::save_position_() {
   PersistedPosition stored{this->raw_position_, this->raw_tilt_, this->has_position_};
   this->position_pref_.save(&stored);
+  // Committed straight away rather than left in the pending buffer. ESPHome
+  // only flushes preferences on a clean shutdown, so without this every reset
+  // that does not get that far — a crash, a power cut, some reflashes — throws
+  // the position away and the blind comes back not knowing where its rails
+  // are. Saves are already limited to a completed move or a disconnect, so
+  // this is a handful of writes a day.
+  global_preferences->sync();
 }
 
 void MotionblindsBLEMotor::publish_() { this->update_callback_.call(); }
