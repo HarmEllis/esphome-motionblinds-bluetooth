@@ -465,6 +465,15 @@ lost Bluetooth events, a stalling rail or a motor that accepts commands without
 moving has been reasoned about and instrumented, but not yet observed on
 hardware.
 
+## Field notes
+
+[`docs/field-notes.md`](docs/field-notes.md) records what these motors and
+ESPHome's Bluetooth stack actually do, as opposed to what the code implies —
+including the quirks that explain why parts of this component are as careful as
+they are, the measurements behind the defaults, and the approaches that were
+tried and rejected. Read it before changing anything in the connection or
+collision paths.
+
 ## Credits
 
 The wire format was derived from [`motionblindsble`][lib] by @LennP, the library
