@@ -22,6 +22,7 @@ esp32_ble:
 esp32_ble_tracker:
   scan_parameters:
     continuous: true
+    connection_scan_window: 160ms
 motionblinds_ble:
   - {id: a_top, mac_code: "0A5A", time_id: local_time}
   - {id: a_bot, mac_code: "EBAA", time_id: local_time}

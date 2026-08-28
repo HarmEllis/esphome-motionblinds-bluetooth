@@ -93,6 +93,11 @@ esp32_ble:
 esp32_ble_tracker:
   scan_parameters:
     continuous: true
+    # ESPHome 2026.8 and later scan at a full duty cycle while idle, but fall
+    # back to a 30 ms window (9.4 %) as soon as any client is connected. That
+    # is exactly when this component has to find the second rail, so raise it
+    # on a node dedicated to these motors. Must not exceed the scan window.
+    connection_scan_window: 160ms
 
 motionblinds_ble:
   # Motors are identified by the four-character code they advertise as
@@ -399,6 +404,42 @@ runtime.
 `button` takes an `action` of `status_query`, `favorite`, `connect` or
 `disconnect`. `status_query` connects and refreshes position, battery, speed
 and calibration.
+
+## The scan window collapses while a motor is connected
+
+The single largest cost in a group operation is not travel, it is waiting to
+hear a motor advertise. On ESPHome 2026.8 and later that wait is roughly ten
+times longer than it needs to be, for a reason that is invisible in the config.
+
+When `wifi:` is configured and ESP-IDF is at least 5.5.5, ESPHome raises a
+defaulted scan window to the full interval — 320 ms out of 320 ms, a 100 % duty
+cycle — and at the same time injects `connection_scan_window: 30ms`, which
+takes over whenever any client is connected. A general-purpose node wants that:
+scanning at full duty while a connection is live starves both Wi-Fi and the
+connection events. A node that exists only to drive these motors does not.
+
+This component connects one rail, holds it for the length of the move, and has
+to discover the other rail during that window. Measured on hardware: a rail went
+unheard for fifteen seconds while its partner was connected, then was found
+1.5 seconds after that partner disconnected.
+
+Set it explicitly:
+
+```yaml
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: true
+    connection_scan_window: 160ms
+```
+
+The value has to be no larger than the scan window, so 320 ms is the ceiling and
+disables the fallback entirely. 160 ms is a reasonable first step rather than a
+measured optimum. Raise it gradually and watch what it costs: lost status
+frames, handshake retries, and API or Wi-Fi reconnects all show up before
+discovery stops improving.
+
+On ESPHome before 2026.8 this option does not exist and the window is 30 ms at
+all times, connected or not.
 
 ## Splitting motors across two nodes
 

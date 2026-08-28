@@ -82,10 +82,12 @@ rounds — about ninety seconds — before it was heard at -78 dBm.
 
 The tempting explanation, that the scanner is stopped while other clients
 connect, does not hold: discovery time is counted only while the scanner is
-actually running, so a motor waiting its turn does not burn its budget. What
-remains is that a radio which is scanning *and* servicing established
-connections misses advertisements it would otherwise catch, and that this motor
-is a weak advertiser to begin with.
+actually running, so a motor waiting its turn does not burn its budget.
+
+The real cause is below: while any motor is connected, ESPHome scans at a
+9.4 % duty cycle instead of 100 %. A rail that has to be found while its
+partner is still connected is looking through a tenth of the airtime, and these
+motors are weak advertisers to begin with.
 
 Not addressed in firmware. A global cap on how many motors may be active at
 once was considered and rejected: with a coordinator that needs both rails
@@ -132,6 +134,53 @@ connection attempt therefore eats into another's chance of being discovered.
 
 A discovery deadline measured on the wall clock is wrong for that reason; this
 component counts only the time the scanner is actually running.
+
+### The scanner drops to a 9.4 % duty cycle while any motor is connected
+
+Measured on a real move: a rail was heard 1.5 s after its partner disconnected,
+having gone unheard for the fifteen seconds before that while the partner was
+connected.
+
+Since 2026.8, when ESP-IDF is at least 5.5.5 and software coexistence is
+compiled in — which is the case whenever `wifi:` is configured — ESPHome does
+two things to a `scan_parameters:` block that leaves `window:` unset
+(`esp32_ble_tracker/__init__.py`, `_raise_defaulted_scan_window`):
+
+* it raises the scan window to the interval, so idle scanning runs at 320/320 ms
+  — a full 100 % duty cycle;
+* it injects `connection_scan_window: 30ms`, and
+  `desired_scan_window_(active)` selects that value **whenever at least one
+  client is connected**.
+
+So the node scans at 100 % while idle and at 30/320 ms — 9.4 % — for exactly the
+period this component depends on most: finding the second rail while the first
+one is still connected and leased for the duration of the move.
+
+Connected clients do not block the scanner (only `CONNECTING`, `DISCOVERED` and
+`DISCONNECTING` do), so the scanner really is running the whole time; it is
+simply listening for a tenth of it. The tracker restarts the scan as soon as the
+programmed window stops matching the connection count, so the switch is not
+deferred to the end of a scan period.
+
+Raising it is a one-line change in the node's YAML:
+
+```yaml
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: true
+    connection_scan_window: 160ms   # 50 %; the default injects 30ms (9.4 %)
+```
+
+The value must be no larger than the scan window. Upstream's 30 ms is a
+deliberate, sensible default for a general-purpose node, where a full-duty scan
+during a live connection would starve Wi-Fi and the connection events
+themselves; a node whose only job is these motors can afford more. 160 ms is a
+starting point, not a measured optimum — raise it in steps and watch for lost
+status frames, handshake retries and API reconnects, not just for faster
+discovery.
+
+On ESPHome before 2026.8 the option does not exist, and the scan window is
+30 ms at all times.
 
 ### Every client does see every advertisement
 
