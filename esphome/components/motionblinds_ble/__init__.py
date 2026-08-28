@@ -53,6 +53,7 @@ SPEED_LEVELS = {
     "HIGH": SpeedLevel.HIGH,
 }
 
+CONF_MAC_CODE = "mac_code"
 CONF_MOTIONBLINDS_BLE_ID = "motionblinds_ble_id"
 CONF_BLE_CLIENT_ID = "ble_client_id"
 CONF_BLIND_TYPE = "blind_type"
@@ -67,6 +68,37 @@ CONF_OPERATION_TIMEOUT = "operation_timeout"
 CONF_STUCK_CONNECT_TIMEOUT = "stuck_connect_timeout"
 CONF_RECOVER_BY_REBOOT = "recover_by_reboot"
 CONF_RECOVER_AFTER = "recover_after"
+
+
+def _validate_mac_code(value):
+    """The four-character code the motor advertises, e.g. 0A5A.
+
+    It is also the last two bytes of the address, which is what lets the
+    component recognise the motor without being told its full address.
+    """
+    value = cv.string_strict(value).strip().upper()
+    if len(value) != 4 or any(character not in "0123456789ABCDEF" for character in value):
+        raise cv.Invalid(
+            f"'{value}' is not a Motionblinds MAC code. Use the four hex characters "
+            f"from the motor's name, for example 0A5A from MOTION_0A5A."
+        )
+    return value
+
+
+def _validate_identifier(config):
+    has_address = CONF_MAC_ADDRESS in config
+    has_code = CONF_MAC_CODE in config
+    if has_address and has_code:
+        raise cv.Invalid(
+            f"Give either '{CONF_MAC_ADDRESS}' or '{CONF_MAC_CODE}', not both",
+            path=[CONF_MAC_CODE],
+        )
+    if not has_address and not has_code:
+        raise cv.Invalid(
+            f"A motor needs either '{CONF_MAC_ADDRESS}' or '{CONF_MAC_CODE}' "
+            f"(the four characters from its MOTION_XXXX name)"
+        )
+    return config
 
 
 def _validate_window(config):
@@ -86,7 +118,9 @@ CONFIG_SCHEMA = cv.All(
             # motor is an implementation detail, and hiding it keeps six motors
             # from needing twelve blocks of YAML.
             cv.GenerateID(CONF_BLE_CLIENT_ID): cv.declare_id(MotionblindsBLEClient),
-            cv.Required(CONF_MAC_ADDRESS): cv.mac_address,
+            # Either the full address, or the short code the motor advertises.
+            cv.Optional(CONF_MAC_ADDRESS): cv.mac_address,
+            cv.Optional(CONF_MAC_CODE): _validate_mac_code,
             cv.Required(CONF_TIME_ID): cv.use_id(time_.RealTimeClock),
             cv.Optional(CONF_BLIND_TYPE, default="ROLLER"): cv.enum(
                 BLIND_TYPES, upper=True, space="_"
@@ -120,6 +154,7 @@ CONFIG_SCHEMA = cv.All(
     )
     .extend(cv.COMPONENT_SCHEMA)
     .extend(esp32_ble_tracker.ESP_BLE_DEVICE_SCHEMA),
+    _validate_identifier,
     _validate_window,
     esp32_ble.consume_connection_slots(1, "motionblinds_ble"),
 )
@@ -192,7 +227,12 @@ async def to_code(config):
     client = cg.new_Pvariable(config[CONF_BLE_CLIENT_ID])
     await cg.register_component(client, config)
     await esp32_ble_tracker.register_client(client, config)
-    cg.add(client.set_address(config[CONF_MAC_ADDRESS].as_hex))
+    if mac_address := config.get(CONF_MAC_ADDRESS):
+        cg.add(client.set_address(mac_address.as_hex))
+    else:
+        # Left unset; the client adopts the address of the first advertisement
+        # whose last two bytes match this code.
+        cg.add(client.set_mac_code(int(config[CONF_MAC_CODE], 16)))
     # Auto-connect governs whether an advertisement may promote the client.
     # It stays on; the component gates reachability with set_enabled() instead,
     # so that connections are serialised by the tracker and the motor's address
@@ -206,12 +246,14 @@ async def to_code(config):
     cg.add(client.set_motor(var))
     cg.add(var.set_ble_client(client))
 
-    # Derived from the address rather than from an entity id, because a motor
-    # is a plain component and has no entity name to hash. Folding the six
-    # bytes into 32 bits keeps it stable across reflashes and distinct between
-    # motors, which is all a preference key has to be.
-    parts = config[CONF_MAC_ADDRESS].parts
-    address = int.from_bytes(bytes(parts), "big")
+    # Derived from whichever identifier was given rather than from an entity
+    # id, because a motor is a plain component and has no entity name to hash.
+    # Either one is stable across reflashes and distinct between motors, which
+    # is all a preference key has to be.
+    if mac_address := config.get(CONF_MAC_ADDRESS):
+        address = int.from_bytes(bytes(mac_address.parts), "big")
+    else:
+        address = int(config[CONF_MAC_CODE], 16)
     cg.add(var.set_preference_key((address ^ (address >> 32)) & 0xFFFFFFFF))
 
     time_source = await cg.get_variable(config[CONF_TIME_ID])

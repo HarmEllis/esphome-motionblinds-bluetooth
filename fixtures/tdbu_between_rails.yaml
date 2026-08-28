@@ -36,12 +36,15 @@ esp32_ble_tracker:
     continuous: true
 
 motionblinds_ble:
+  # Identified by the code the motor advertises as MOTION_0A5A, rather than by
+  # a full address. The address is learned from the first matching
+  # advertisement.
   - id: living_top
-    mac_address: A4:C1:38:00:0A:5A
+    mac_code: 0A5A
     time_id: local_time
     blind_type: honeycomb
   - id: living_bottom
-    mac_address: A4:C1:38:00:EB:AA
+    mac_code: EBAA
     time_id: local_time
     blind_type: honeycomb
     # This rail is mounted upside down, so its raw positions run the other way

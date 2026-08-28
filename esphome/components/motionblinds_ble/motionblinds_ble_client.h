@@ -34,7 +34,20 @@ class MotionblindsBLEMotor;
  */
 class MotionblindsBLEClient : public esp32_ble_client::BLEClientBase {
  public:
+  /// Sentinel for "no code configured"; a real code is 16 bits.
+  static constexpr uint32_t NO_MAC_CODE = 0xFFFFFFFF;
+
   void set_motor(MotionblindsBLEMotor *motor) { this->motor_ = motor; }
+
+  /// Identify the motor by the four-character code it advertises rather than
+  /// by a full address.
+  ///
+  /// Motionblinds motors advertise as MOTION_XXXX, where XXXX is also the last
+  /// two bytes of their address. That code is what the vendor app, the sticker
+  /// on the motor and Home Assistant all show, so it is the identifier a user
+  /// actually has to hand. The full address is learned from the first matching
+  /// advertisement.
+  void set_mac_code(uint16_t code) { this->mac_code_ = code; }
 
   bool parse_device(const espbt::ESPBTDevice &device) override;
   bool gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
@@ -48,6 +61,7 @@ class MotionblindsBLEClient : public esp32_ble_client::BLEClientBase {
   void on_disconnect_complete(esp_err_t reason) override;
 
   MotionblindsBLEMotor *motor_{nullptr};
+  uint32_t mac_code_{NO_MAC_CODE};
   bool enabled_{false};
 };
 

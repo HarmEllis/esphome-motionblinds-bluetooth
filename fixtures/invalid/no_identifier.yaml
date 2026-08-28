@@ -1,0 +1,35 @@
+# Must fail: a motor needs either a full address or the short code it
+# advertises, and giving both is ambiguous.
+esphome:
+  name: invalid-identifier
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+wifi:
+  ssid: fixture
+  password: fixture-password
+
+external_components:
+  - source:
+      type: local
+      path: ../../esphome/components
+    components: [motionblinds_ble]
+
+time:
+  - platform: sntp
+    id: local_time
+
+esp32_ble:
+  max_connections: 1
+
+esp32_ble_tracker:
+
+motionblinds_ble:
+  - id: m1
+    time_id: local_time

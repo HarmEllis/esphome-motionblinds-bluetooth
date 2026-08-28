@@ -95,12 +95,15 @@ esp32_ble_tracker:
     continuous: true
 
 motionblinds_ble:
+  # Motors are identified by the four-character code they advertise as
+  # MOTION_XXXX, which is what the vendor app and the sticker on the motor
+  # show. Use mac_address instead if you prefer to pin the full address.
   - id: living_top
-    mac_address: A4:C1:38:00:0A:5A
+    mac_code: 0A5A
     time_id: ha_time
     blind_type: honeycomb
   - id: living_bottom
-    mac_address: A4:C1:38:00:EB:AA
+    mac_code: EBAA
     time_id: ha_time
     blind_type: honeycomb
     invert: true
@@ -133,7 +136,8 @@ cover:
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `id` | yes | | Identifier used by the platforms below. |
-| `mac_address` | yes | | The motor's address. The Bluetooth client is created for you; there is no `ble_client:` block to write. |
+| `mac_code` | one of | | The four characters from the motor's `MOTION_XXXX` name, e.g. `0A5A`. The full address is learned from the first matching advertisement, which also means a motor that randomises its address still works. |
+| `mac_address` | one of | | The motor's full address, if you would rather pin it. Exactly one of `mac_code` and `mac_address` is required. The Bluetooth client is created for you either way; there is no `ble_client:` block to write. |
 | `time_id` | yes | | A `time:` component. Commands carry a timestamp and are refused while the clock is unsynchronised. |
 | `blind_type` | no | `roller` | `roller`, `honeycomb`, `roman`, `venetian`, `double_roller`, `curtain`, `vertical`. Curtain and vertical motors get a longer pause after keying. |
 | `invert` | no | `false` | The motor is mounted upside down, so its positions run the other way through the window. |
