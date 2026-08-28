@@ -379,8 +379,11 @@ entity carries until something is written to it reads as **fully open**. Treat
 `position_fresh` and the blind's status text as the authoritative signals, not
 the cover, until a rail has been heard from once.
 
-Positions are committed to flash as soon as a move completes, so this window is
-normally only a node's very first boot.
+Positions **and battery readings** are committed to flash as soon as they change,
+so this window is normally only a node's very first boot. Signal strength is
+deliberately not kept: a remembered RSSI describes a radio moment that has
+passed and says nothing about now, so it stays empty until the motor is next
+heard.
 
 `position_fresh` reports whether the position was actually observed during the
 current connection. The cover's own `assumed_state` flag cannot express this:

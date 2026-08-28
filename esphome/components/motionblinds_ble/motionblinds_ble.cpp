@@ -50,18 +50,29 @@ const char *motor_state_to_string(MotorState state) {
 }
 
 void MotionblindsBLEMotor::setup() {
-  this->position_pref_ = global_preferences->make_preference<PersistedPosition>(this->preference_key_);
+  this->state_pref_ = global_preferences->make_preference<PersistedState>(this->preference_key_);
 
-  PersistedPosition stored{};
-  if (this->position_pref_.load(&stored) && stored.valid) {
-    // Restored for continuity in the UI only. It is explicitly not fresh: a
-    // remote or the vendor app can move a rail while this node is powered off,
-    // so this value must never be the basis for a collision decision.
-    this->raw_position_ = stored.raw_position;
-    this->raw_tilt_ = stored.raw_tilt;
-    this->has_position_ = true;
-    this->position_fresh_ = false;
-    ESP_LOGD(TAG, "[%s] Restored stale position %u", this->label_, static_cast<unsigned>(stored.raw_position));
+  PersistedState stored{};
+  if (this->state_pref_.load(&stored)) {
+    // Restored for continuity only. Explicitly not fresh: a remote or the
+    // vendor app can move a rail while this node is powered off, so a restored
+    // position must never be the basis for a collision decision.
+    if (stored.has_position) {
+      this->raw_position_ = stored.raw_position;
+      this->raw_tilt_ = stored.raw_tilt;
+      this->has_position_ = true;
+      this->position_fresh_ = false;
+    }
+    // A battery percentage moves over days, so yesterday's reading beats no
+    // reading at all — and it is the number people check when a blind stops
+    // responding.
+    if (stored.has_battery) {
+      this->battery_percentage_ = stored.battery_percentage;
+      this->battery_charging_ = stored.charging;
+      this->has_battery_ = true;
+    }
+    ESP_LOGI(TAG, "[%s] Restored position %u and battery %u%% from before the restart", this->label_,
+             static_cast<unsigned>(this->raw_position_), static_cast<unsigned>(this->battery_percentage_));
   }
 }
 
@@ -671,9 +682,12 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
   this->position_fresh_ = true;
 
   if (notification.has_battery) {
+    const bool changed = !this->has_battery_ || this->battery_percentage_ != notification.battery_percentage;
     this->has_battery_ = true;
     this->battery_percentage_ = notification.battery_percentage;
     this->battery_charging_ = notification.charging;
+    if (changed)
+      this->save_position_();
   }
   if (notification.has_speed) {
     this->has_speed_ = true;
@@ -779,8 +793,9 @@ void MotionblindsBLEMotor::mark_stale_() {
 }
 
 void MotionblindsBLEMotor::save_position_() {
-  PersistedPosition stored{this->raw_position_, this->raw_tilt_, this->has_position_};
-  this->position_pref_.save(&stored);
+  PersistedState stored{this->raw_position_,   this->raw_tilt_,   this->battery_percentage_,
+                        this->has_position_,   this->has_battery_, this->battery_charging_};
+  this->state_pref_.save(&stored);
   // Committed straight away rather than left in the pending buffer. ESPHome
   // only flushes preferences on a clean shutdown, so without this every reset
   // that does not get that far — a crash, a power cut, some reflashes — throws

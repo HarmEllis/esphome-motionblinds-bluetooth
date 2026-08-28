@@ -167,10 +167,19 @@ class MotionblindsBLEMotor : public Component {
     DONE,
   };
 
-  struct PersistedPosition {
+  /// What is worth carrying across a reboot.
+  ///
+  /// Position and battery both change slowly and are far more useful stale
+  /// than blank. Signal strength deliberately is not here: a remembered RSSI
+  /// describes a radio moment that has passed and says nothing about now, so
+  /// it stays empty until the motor is next heard.
+  struct PersistedState {
     uint8_t raw_position;
     uint8_t raw_tilt;
-    bool valid;
+    uint8_t battery_percentage;
+    bool has_position;
+    bool has_battery;
+    bool charging;
   } PACKED;
 
   bool enqueue_(Command command, uint8_t argument, Verification verification, uint8_t target = 0);
@@ -253,7 +262,7 @@ class MotionblindsBLEMotor : public Component {
   bool has_speed_{false};
   SpeedLevel speed_{SpeedLevel::MEDIUM};
 
-  ESPPreferenceObject position_pref_;
+  ESPPreferenceObject state_pref_;
   CallbackManager<void()> update_callback_{};
 };
 
