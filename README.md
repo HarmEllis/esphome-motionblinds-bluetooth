@@ -142,7 +142,7 @@ cover:
 | `blind_type` | no | `roller` | `roller`, `honeycomb`, `roman`, `venetian`, `double_roller`, `curtain`, `vertical`. Curtain and vertical motors get a longer pause after keying. |
 | `invert` | no | `false` | The motor is mounted upside down, so its positions run the other way through the window. |
 | `window_min` / `window_max` | no | `0` / `100` | The part of the window this rail actually travels. Needed when the two motors of one blind are each calibrated over their own half. |
-| `disconnect_delay` | no | `15s` | Idle time before the connection is dropped. Only starts once no move is in progress. |
+| `disconnect_delay` | no | `15s` | Idle time before the connection is dropped. Only starts once no move is in progress. On a node with several motors, consider lowering it: a finished motor holding its link for fifteen seconds is competing for the radio precisely while the others are trying to be heard. |
 | `discovery_timeout` | no | `30s` | Listening time per round. Counted only while the scanner is actually running, because the tracker stops scanning whenever any client is connecting. |
 | `connect_timeout` | no | `20s` | |
 | `handshake_timeout` | no | `15s` | Keying and the first status frame. Generous on purpose: six motors, Wi-Fi and logging share one radio, and a connection that is merely slow is not a failure. |
@@ -399,6 +399,27 @@ runtime.
 `button` takes an `action` of `status_query`, `favorite`, `connect` or
 `disconnect`. `status_query` connects and refreshes position, battery, speed
 and calibration.
+
+## Splitting motors across two nodes
+
+Six motors is the ceiling on one ESP32, but it is not always the right number.
+A motor at the far end of the house shares a radio with five others and drags
+out every group operation; a second node next to it may beat any amount of
+tuning, even on a board with a worse antenna, because proximity usually wins.
+
+To split, move a whole blind — both its rails and its `motionblinds_ble_tdbu:`
+entry — to the second node's configuration, and set each node's
+`esp32_ble: max_connections:` to the number of motors it actually has.
+
+> **A motor must appear on exactly one node.** Nothing can detect otherwise:
+> each node validates only its own configuration, and neither has any way to
+> know the other exists. Two nodes connecting to the same motor is the failure
+> this component was built to escape — it is what an unremoved Home Assistant
+> integration does, and the symptom is a motor that connects, accepts commands
+> and does nothing.
+
+Both rails of a blind must stay together, since the coordinator has to reach
+both to keep them from colliding.
 
 ## The silent-after-keying connection
 

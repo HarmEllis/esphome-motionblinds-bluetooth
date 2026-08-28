@@ -221,6 +221,25 @@ so a single RSSI reading says little.
 
 ---
 
+## Ideas assessed and not taken
+
+**Raising the scanner duty cycle.** Worth checking on your own version before
+acting on advice about it: ESPHome's default `window` was 30 ms against a 320 ms
+interval — 9.4% — in 2026.6, but is 320 ms against 320 ms in 2026.8, which is
+already continuous. There is nothing to win on a version where it is the
+latter.
+
+**Direct connect with a cached address and type.** Tempting, since waiting for
+an advertisement is the slow part. It does not help: `esp_ble_gattc_open()`
+still waits for the target's next advertisement, but does so inside the
+uncancellable `CONNECTING` state — moving the wait to the one place where it
+blocks every other motor on the node.
+
+**MTU tuning and persisting raw handles.** The frames are tiny, MTU negotiation
+already starts in the connect event and saves about three milliseconds, and the
+GATT cache already removes rediscovery. No evidence that discovery rather than
+advertisement capture owns the connection time.
+
 ## Tried and rejected
 
 **Scaling a rail's position against the other rail's remaining travel.** What

@@ -36,7 +36,13 @@ static const uint32_t TRAVEL_TIMEOUT_PER_PERCENT_MS = 700;
 /// it. Users of the integration this replaces reached the same conclusion
 /// independently: sending requests in quick succession makes a blind do
 /// nothing at all.
-static const uint32_t MIN_COMMAND_GAP_MS = 1500;
+///
+/// Three seconds is a starting point rather than a measurement. It is the only
+/// interval with any evidence behind it — the same one the library's own
+/// maintainer chose between status-query retries — and the failures seen here
+/// were all well inside it. If second commands still go unconfirmed, this is
+/// the first number to raise.
+static const uint32_t MIN_COMMAND_GAP_MS = 3000;
 static const uint8_t MAX_ATTEMPTS = 3;
 static const uint8_t QUEUE_LIMIT = 8;
 /// Two consecutive frames on target before a move counts as settled, so a
