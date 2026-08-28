@@ -4,11 +4,44 @@ An [ESPHome](https://esphome.io) component that drives Motionblinds Bluetooth
 motors directly from an ESP32, including top-down bottom-up blinds where two
 motors share one window and must not be driven into each other.
 
-It replaces the Home Assistant `motionblinds_ble` integration for these motors.
-That integration has no deadline anywhere in its connection or command path, so
-a failed command can hang indefinitely with no exception, no timeout and
-nothing in the log. Here every step has one, and a command that cannot be
-verified is reported as a failure rather than as a success.
+## Why this exists
+
+It grew out of living with the Home Assistant [`motionblinds_ble`][core]
+integration across six motors and finding four separate ways for it to fail,
+none of which announce themselves:
+
+1. **A command can hang forever.** `cover.set_cover_position` has been observed
+   still running after forty minutes, with no exception, no timeout and nothing
+   in the log. The Bluetooth connection was healthy the whole time.
+2. **A motor can become permanently unreachable** until its config entry is
+   reloaded. Every call then fails instantly with a `BleakError` raised from a
+   dead connection task, without the library ever trying to reconnect.
+3. **A motor can accept commands and not move.** It connects, reports success,
+   and sends no status frame at all — so the blind sits still while everything
+   upstream believes it moved.
+4. **A shared script pool can fill with hung runs**, after which nothing
+   happens at all and no error appears anywhere. The automation traces look
+   perfect; the failure is one layer below them.
+
+Underneath all four sits the same root problem: **there is no deadline anywhere
+in the connection or command path**, so a step that never completes simply
+never completes. Every step here has one, and a command whose effect cannot be
+established is reported as a failure rather than as a success.
+
+Two further gaps this closes:
+
+- **No top-down bottom-up support.** The integration configures one motor per
+  config entry, so a top-down bottom-up blind appears as two unrelated blinds.
+  Neither motor knows the other exists, and nothing stops one rail from being
+  driven into the other. Working around that in automations means keeping the
+  positions in helper entities, which drift from reality the moment a command
+  fails or someone picks up the remote.
+- **Position and battery read `unknown` most of the time.** Both are only known
+  while a Bluetooth connection is up, and the connection is dropped seconds
+  after each command. Here the last known position is kept across reboots, and
+  battery arrives with every status frame — with an explicit
+  `position_fresh` sensor so you can tell a remembered value from an observed
+  one instead of guessing.
 
 ## What it does differently
 
