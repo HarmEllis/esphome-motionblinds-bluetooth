@@ -54,13 +54,16 @@ void MotionblindsBLECover::update_state_() {
   if (this->motor_ == nullptr)
     return;
 
+  // See the top-down bottom-up cover: an unknown position is published as
+  // nothing at all rather than as the default, which reads as fully open.
   const float window = this->motor_->window_position();
-  if (!std::isnan(window)) {
-    const auto &range = this->motor_->rail_range();
-    const float span = range.window_max - range.window_min;
-    if (span > 0.0f)
-      this->position = clamp((range.window_max - window) / span, 0.0f, 1.0f);
-  }
+  if (std::isnan(window))
+    return;
+
+  const auto &range = this->motor_->rail_range();
+  const float span = range.window_max - range.window_min;
+  if (span > 0.0f)
+    this->position = clamp((range.window_max - window) / span, 0.0f, 1.0f);
 
   // Closed is the rail at window_max, so travelling that way is closing.
   const int8_t direction = this->motor_->travel_direction();

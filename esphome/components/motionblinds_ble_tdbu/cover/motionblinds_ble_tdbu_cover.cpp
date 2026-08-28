@@ -63,11 +63,19 @@ void MotionblindsBLETdbuCover::update_state_() {
     value = this->tdbu_->rail_position(this->rail_ == CoverRail::TOP ? Rail::TOP : Rail::BOTTOM);
   }
 
+  // Nothing is published while the position is unknown. A cover position is a
+  // plain number with no room for "I do not know", so publishing anything at
+  // all would state a position the component does not have — and the default
+  // reads as fully open, which is the most misleading answer available. Leaving
+  // the entity unknown is the honest one, and it is what the blind's status
+  // text says too.
+  if (std::isnan(value))
+    return;
+
   // Whatever the rail actually reached, including a target the collision guard
   // had to shorten. Publishing the request instead would tell Home Assistant a
   // rail is at an end stop it never got to.
-  if (!std::isnan(value))
-    this->position = clamp(value, 0.0f, 1.0f);
+  this->position = clamp(value, 0.0f, 1.0f);
 
   const int8_t direction = this->tdbu_->travel_direction();
   if (!this->tdbu_->is_moving() || direction == 0) {
