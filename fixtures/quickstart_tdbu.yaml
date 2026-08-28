@@ -1,0 +1,100 @@
+# Mirrors the quick start in README.md. Kept as a fixture so CI fails if
+# the documented example stops being a working configuration.
+
+esphome:
+  name: quickstart-tdbu
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+logger:
+api:
+wifi:
+  ssid: fixture
+  password: fixture-password
+external_components:
+  - source:
+      type: local
+      path: ../esphome/components
+    components: [motionblinds_ble, motionblinds_ble_tdbu]
+
+# Commands are encrypted with a wall-clock timestamp, so the node needs a
+# synchronised clock. Without one, commands are refused with an explicit log
+# line rather than sent and silently ignored.
+time:
+  - platform: homeassistant
+    id: ha_time
+
+esp32_ble:
+  # The number of motors. ESPHome adds the advertising/scanning instance on
+  # top of this itself, so do not add one here.
+  max_connections: 2   # two motors on this node
+
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: true
+    # Strongly recommended, and worth more than any other single setting.
+    # See "Making it fast" for what it does and why the default hurts here.
+    connection_scan_window: 160ms
+motionblinds_ble:
+  - id: living_top
+    mac_code: 0A5A
+    time_id: ha_time
+    blind_type: honeycomb
+    fast_connect: true
+  - id: living_bottom
+    mac_code: EBAA
+    time_id: ha_time
+    blind_type: honeycomb
+    fast_connect: true
+    invert: true          # this motor is mounted upside down
+
+motionblinds_ble_tdbu:
+  - id: living_blind
+    top_motor: living_top
+    bottom_motor: living_bottom
+    fabric: between_rails
+    optimistic: true      # see "Making it fast"
+    diagnostics:
+      name: "Living blind"
+
+cover:
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: living_blind
+    rail: top
+    name: "Living blind top"
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: living_blind
+    rail: bottom
+    name: "Living blind bottom"
+sensor:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    battery_level: {name: "Battery"}
+    signal_strength: {name: "Signal"}
+
+binary_sensor:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    position_fresh: {name: "Position fresh"}
+    calibrated: {name: "Calibration"}
+
+text_sensor:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    connection_status: {name: "Connection"}
+
+select:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    speed: {name: "Speed"}
+
+button:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: living_top
+    action: status_query          # status_query | favorite | connect | disconnect
+    name: "Refresh"
+number:
+  - platform: motionblinds_ble_tdbu
+    tdbu_id: living_blind
+    fabric_position: {name: "Living blind fabric position"}

@@ -1,0 +1,51 @@
+# Mirrors the quick start in README.md. Kept as a fixture so CI fails if
+# the documented example stops being a working configuration.
+
+esphome:
+  name: quickstart-single
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+logger:
+api:
+wifi:
+  ssid: fixture
+  password: fixture-password
+external_components:
+  - source:
+      type: local
+      path: ../esphome/components
+    components: [motionblinds_ble, motionblinds_ble_tdbu]
+
+# Commands are encrypted with a wall-clock timestamp, so the node needs a
+# synchronised clock. Without one, commands are refused with an explicit log
+# line rather than sent and silently ignored.
+time:
+  - platform: homeassistant
+    id: ha_time
+
+esp32_ble:
+  # The number of motors. ESPHome adds the advertising/scanning instance on
+  # top of this itself, so do not add one here.
+  max_connections: 2
+
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: true
+    # Strongly recommended, and worth more than any other single setting.
+    # See "Making it fast" for what it does and why the default hurts here.
+    connection_scan_window: 160ms
+motionblinds_ble:
+  # Motors are identified by the four characters they advertise as MOTION_XXXX,
+  # which is what the vendor app and the sticker on the motor show.
+  - id: office_blind
+    mac_code: 0A5A
+    time_id: ha_time
+    blind_type: roller
+    fast_connect: true
+
+cover:
+  - platform: motionblinds_ble
+    motionblinds_ble_id: office_blind
+    name: "Office blind"
