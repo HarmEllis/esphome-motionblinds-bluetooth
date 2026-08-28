@@ -186,6 +186,8 @@ class MotionblindsBLEMotor : public Component {
   void start_operation_();
   void finish_operation_();
   void fail_(const char *reason);
+  /// Drop the link and try again, keeping the queued work.
+  void retry_connection_(const char *reason);
   void abort_();
   void reconcile_state_();
   void drive_handshake_();

@@ -400,6 +400,23 @@ runtime.
 `disconnect`. `status_query` connects and refreshes position, battery, speed
 and calibration.
 
+## The silent-after-keying connection
+
+These motors sometimes accept a connection, confirm their notifications and
+accept the key, and then say nothing: no status frame, so no battery, no speed,
+and no movement from any command sent over that link. It is not a signal
+problem — it has been seen here on a -63 dBm connection — and it is a known,
+still-open fault of the Home Assistant integration this component replaces
+([core#153218](https://github.com/home-assistant/core/issues/153218)), where it
+shows up as a blind stuck at "Connected" with battery and speed `unknown`.
+
+Asking again over the same link does not help. What works, and what people
+using that integration have resorted to automating by hand, is dropping the
+connection and making a fresh one — usually two to four attempts before one
+takes. This component does that itself: a connection that goes quiet after
+being keyed is retried like a dropped link rather than reported as the motor's
+answer, within the same attempt limit as any other failure.
+
 ## Known limitations
 
 - **A stuck connection attempt cannot be cancelled.** If the Bluetooth stack

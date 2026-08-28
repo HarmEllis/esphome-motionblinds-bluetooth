@@ -28,10 +28,15 @@ static const uint8_t QUEUE_LIMIT = 8;
 /// Two consecutive frames on target before a move counts as settled, so a
 /// single frame taken while the rail passes through cannot end the wait.
 static const uint8_t SETTLE_FRAMES = 2;
-/// How long to wait for a status frame before assuming the request never
-/// arrived, and how many times to ask again before giving up on the motor.
-static const uint32_t HANDSHAKE_RETRY_MS = 3000;
-static const uint8_t MAX_HANDSHAKE_ATTEMPTS = 3;
+/// How long to wait for a status frame before asking once more, in case the
+/// unacknowledged write was simply lost.
+///
+/// Only once. A motor that has gone quiet after being keyed does not come back
+/// because it was asked again — the remedy that works in the field is a fresh
+/// connection, and piling on writes is reported to make matters worse rather
+/// than better.
+static const uint32_t HANDSHAKE_RETRY_MS = 4000;
+static const uint8_t MAX_HANDSHAKE_ATTEMPTS = 2;
 
 const char *motor_state_to_string(MotorState state) {
   switch (state) {
@@ -345,8 +350,15 @@ void MotionblindsBLEMotor::loop() {
             this->fail_("motor did not settle after being keyed");
             break;
           case Handshake::WAIT_STATUS:
-            this->fail_("motor was keyed but never sent its status");
-            break;
+            // The signature of a connection this motor is not really present
+            // on: linked and keyed, but silent, with no battery or speed ever
+            // arriving. It is a known and still-open fault in the Home
+            // Assistant integration this replaces, and the remedy people have
+            // found is not patience but a fresh connection — typically two to
+            // four before one takes. So this is retried like a dropped link
+            // rather than treated as the motor's final answer.
+            this->retry_connection_("keyed but silent");
+            return;
           default:
             this->fail_("handshake timed out");
             break;
@@ -796,6 +808,20 @@ void MotionblindsBLEMotor::fail_(const char *reason) {
   this->abort_();
   this->operation_since_ = 0;
   this->lease_count_ = 0;
+}
+
+void MotionblindsBLEMotor::retry_connection_(const char *reason) {
+  ESP_LOGW(TAG, "[%s] Connection was %s, dropping it to try a fresh one", this->label_, reason);
+  this->command_in_flight_ = false;
+  this->command_handle_ = 0;
+  this->notify_handle_ = 0;
+  this->config_descriptor_handle_ = 0;
+  this->handshake_ = Handshake::NONE;
+  // The queue is deliberately left intact and the state left in HANDSHAKE, so
+  // that reconcile_state_() sees the link go idle and retries with the work
+  // still to do, counting against the same attempt limit as any other failure.
+  if (this->ble_client_ != nullptr)
+    this->ble_client_->set_enabled(false);
 }
 
 void MotionblindsBLEMotor::abort_() {
