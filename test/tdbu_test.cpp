@@ -158,6 +158,12 @@ void test_clamping() {
 void test_exhaustive_invariant() {
   std::printf("exhaustive invariant sweep\n");
   const Geometry geometries[] = {
+      // The defaults: rails that are allowed to stack against each other. The
+      // invariant then reduces to "the bottom rail is never above the top one",
+      // which is the one thing that must still hold.
+      full(Fabric::BETWEEN_RAILS, 0.0f, 0.0f),
+      full(Fabric::OUTSIDE_IN, 0.0f, 0.0f),
+      Geometry(Fabric::BETWEEN_RAILS, 0.0f, 0.0f, RailRange{0.0f, 100.0f, true}, RailRange{0.0f, 100.0f, false}),
       full(Fabric::BETWEEN_RAILS, 5.0f, 2.0f),
       full(Fabric::OUTSIDE_IN, 5.0f, 2.0f),
       Geometry(Fabric::BETWEEN_RAILS, 5.0f, 2.0f, RailRange{0.0f, 100.0f, true}, RailRange{0.0f, 100.0f, false}),
@@ -223,7 +229,16 @@ void test_exhaustive_invariant() {
 // version moved a stationary rail's reading whenever the other one travelled.
 void test_rail_position_is_absolute() {
   std::printf("absolute rail positions\n");
-  const Geometry geometry = full(Fabric::BETWEEN_RAILS, 5.0f, 2.0f);
+  const Geometry geometry = full(Fabric::BETWEEN_RAILS, 0.0f, 0.0f);
+
+  // With rails that may meet, both ends of the window are reachable for each
+  // rail no matter where the other one is: a blind collapsed at the head reads
+  // 100 on both rails, not 100 and 93.
+  check_close(geometry.clamp_target(Rail::BOTTOM, 0.0f, 0.0f), 0.0f, "bottom may join the top rail at the head");
+  check_close(geometry.clamp_target(Rail::TOP, 100.0f, 100.0f), 100.0f, "top may join the bottom rail at the sill");
+  // Crossing is still refused.
+  check_close(geometry.clamp_target(Rail::BOTTOM, 0.0f, 40.0f), 40.0f, "bottom may not rise above the top rail");
+  check_close(geometry.clamp_target(Rail::TOP, 100.0f, 40.0f), 40.0f, "top may not sink below the bottom rail");
 
   // Both rails report how high they are, so the up arrow means up either way.
   check_close(geometry.rail_position(Rail::TOP, 0.0f), 1.0f, "top raised reads 1");
@@ -260,6 +275,8 @@ void test_rail_position_is_absolute() {
 void test_extremes_are_reachable() {
   std::printf("extremes\n");
   const Geometry geometries[] = {
+      full(Fabric::BETWEEN_RAILS, 0.0f, 0.0f),
+      full(Fabric::OUTSIDE_IN, 0.0f, 0.0f),
       full(Fabric::BETWEEN_RAILS, 5.0f, 0.0f),
       full(Fabric::OUTSIDE_IN, 5.0f, 0.0f),
       Geometry(Fabric::BETWEEN_RAILS, 5.0f, 0.0f, RailRange{10.0f, 70.0f, false}, RailRange{30.0f, 90.0f, false}),

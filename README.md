@@ -176,8 +176,9 @@ meaning differs:
 | --- | --- | --- | --- |
 | `top_motor` / `bottom_motor` | yes | | The two motors. |
 | `fabric` | no | `between_rails` | `between_rails` or `outside_in`. |
-| `min_gap` | no | `5%` | How close the rails may physically come. Stacked fabric takes up room. |
-| `safety_margin` | no | `2%` | Added on top when computing targets, for whole-numbered feedback and motor overshoot. |
+| `min_gap` | no | `0%` | How close the rails may be commanded. Zero by default: on most of these blinds the rails stack against each other at either end, and the motors stop themselves if they meet. Raise it only for a blind whose rails genuinely cannot come together. |
+| `safety_margin` | no | `0%` | Added on top of `min_gap` when computing targets, for whole-numbered feedback and motor overshoot. |
+| `start_gap` | no | `10%` | Observed gap below which two rails may not be *set off* at the same moment. They may travel together; starting together while they are close is what drives them into each other. |
 | `clearance_timeout` | no | `60s` | How long the second rail waits for the first to make room. |
 | `lease_timeout` | no | `180s` | Upper bound on holding both connections open. |
 | `diagnostics` | no | | Builds the per-rail diagnostic entities; see below. |
@@ -268,26 +269,31 @@ one desired geometry so that using one does not undo the other.
 
 ### Collision avoidance
 
-Rails that touch jam the motors and stop mid-travel. Five rules, in order:
+These blinds stop themselves when the rails meet, and on most of them the rails
+are meant to stack against each other at either end — a blind collapsed at the
+head has both rails at the head. So the job here is not to keep the rails apart;
+it is to keep them from being driven into each other in the first place, and
+above all to start them in the right order. Five rules:
 
 1. **Never move on a remembered position.** Both motors are asked where they
    are first. If that fails, the move is refused rather than guessed at. Only
    moves whose physical direction is fixed regardless of position — stop, and
    retreating a rail to its own far end — are exempt, which is what keeps a
    blind recoverable after a restart.
-2. **The rail that opens the gap goes first.** The one closing it starts only
-   once there is *observed* room. A completed write is not observation. Where
-   both rails close in on each other, the second waits for the first to
-   actually arrive, not merely to have started.
-3. **Targets carry a margin.** `safety_margin` sits on top of `min_gap`,
-   because position feedback is whole-numbered and these motors' overshoot is
-   not specified anywhere.
+2. **The rail that opens the gap goes first**, and the second one starts only
+   once the first has *observably* opened the gap past `start_gap`. A completed
+   write is not observation. When the rails already have more than `start_gap`
+   between them, both start together — they are allowed to travel at the same
+   time; what they must not do is set off together while they are close.
+3. **Targets never cross.** A rail is clamped so it cannot be commanded past
+   the other one, plus `min_gap` and `safety_margin` where a blind needs them.
 4. **A failure stops the move.** If the first rail does not accept its command,
    or never makes room, the second rail is not moved at all.
 5. **A watchdog runs throughout.** Every position frame is checked, and both
-   rails are stopped the moment the observed gap drops below `min_gap`. This is
-   what covers the moves the planning cannot see: a stalling rail, the physical
-   remote, and the favorite button.
+   rails are stopped the moment the observed gap drops below `min_gap`. At the
+   default of zero that means only a genuine crossing. This is what covers the
+   moves the planning cannot see: a stalling rail, the physical remote, and the
+   favorite button.
 
 ## Diagnostics and controls, per motor
 

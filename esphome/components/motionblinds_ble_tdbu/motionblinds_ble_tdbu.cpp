@@ -48,9 +48,11 @@ void MotionblindsBLETdbu::dump_config() {
                 "  Fabric: %s\n"
                 "  Minimum gap: %.0f%%\n"
                 "  Safety margin: %.0f%%\n"
+                "  Start gap: %.0f%%\n"
                 "  Reachable segment: %.0f%% - %.0f%%",
                 this->fabric_ == Fabric::BETWEEN_RAILS ? "between rails" : "outside in", this->min_gap_,
-                this->safety_margin_, this->geometry_.min_length(), this->geometry_.max_length());
+                this->safety_margin_, this->start_gap_, this->geometry_.min_length(),
+                this->geometry_.max_length());
 }
 
 // ------------------------------------------------------------------ state
@@ -251,8 +253,14 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
     return;
   }
 
-  // A rail moving toward the other one may only start once there is observed
-  // room for it, so the rail that makes room has to go first.
+  // Which rail leads is decided by what each one does to the gap: the rail that
+  // opens it goes first. Whether the second has to wait is a separate question,
+  // decided by how much room there is *right now* — two rails far apart can
+  // start together even when one is closing on the other, while two rails
+  // almost touching must not start together in any direction.
+  const float gap = bottom - top;
+  const bool roomy = gap >= this->start_gap_;
+
   if (top_direction == Direction::STATIONARY) {
     this->lead_ = Rail::BOTTOM;
     this->lead_target_ = target_bottom;
@@ -263,39 +271,17 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
     this->lead_target_ = target_top;
     this->has_trail_ = false;
     this->wait_ = Wait::NONE;
-  } else if (top_direction == Direction::AWAY && bottom_direction == Direction::AWAY) {
-    // Both widening the gap: neither can run into the other, so they go together.
-    this->lead_ = Rail::TOP;
-    this->lead_target_ = target_top;
-    this->trail_ = Rail::BOTTOM;
-    this->trail_target_ = target_bottom;
-    this->has_trail_ = true;
-    this->wait_ = Wait::NONE;
-  } else if (top_direction == Direction::AWAY) {
-    this->lead_ = Rail::TOP;
-    this->lead_target_ = target_top;
-    this->trail_ = Rail::BOTTOM;
-    this->trail_target_ = target_bottom;
-    this->has_trail_ = true;
-    this->wait_ = Wait::CLEARANCE;
-  } else if (bottom_direction == Direction::AWAY) {
-    this->lead_ = Rail::BOTTOM;
-    this->lead_target_ = target_bottom;
-    this->trail_ = Rail::TOP;
-    this->trail_target_ = target_top;
-    this->has_trail_ = true;
-    this->wait_ = Wait::CLEARANCE;
   } else {
-    // Both closing in. The end state is safe because the targets already keep
-    // their distance, but only if the rails do not travel at the same time:
-    // the second one waits for the first to actually arrive, not merely to
-    // have started.
-    this->lead_ = Rail::TOP;
-    this->lead_target_ = target_top;
-    this->trail_ = Rail::BOTTOM;
-    this->trail_target_ = target_bottom;
+    // Both rails move. The one whose travel opens the gap leads; if neither
+    // does (both closing in) the top rail leads by convention, and the wait
+    // below is what keeps them apart.
+    const bool top_leads = top_direction == Direction::AWAY || bottom_direction != Direction::AWAY;
+    this->lead_ = top_leads ? Rail::TOP : Rail::BOTTOM;
+    this->trail_ = top_leads ? Rail::BOTTOM : Rail::TOP;
+    this->lead_target_ = top_leads ? target_top : target_bottom;
+    this->trail_target_ = top_leads ? target_bottom : target_top;
     this->has_trail_ = true;
-    this->wait_ = Wait::SETTLED;
+    this->wait_ = roomy ? Wait::NONE : Wait::CLEARANCE;
   }
 
   if (!this->command_(this->lead_, this->lead_target_)) {
@@ -338,21 +324,16 @@ void MotionblindsBLETdbu::advance_() {
   if (std::isnan(lead_position))
     return;
 
-  bool ready = false;
-  if (this->wait_ == Wait::CLEARANCE) {
-    // Enough room exists once the leading rail has passed the point where the
-    // trailing rail's target still clears it.
-    const float required = this->geometry_.effective_gap();
-    ready = this->trail_ == Rail::TOP ? (lead_position - this->trail_target_) >= required
-                                      : (this->trail_target_ - lead_position) >= required;
-  } else if (this->wait_ == Wait::SETTLED) {
-    ready = !this->motor_(this->lead_)->is_moving() && std::fabs(lead_position - this->lead_target_) <= 1.0f;
-  }
-
-  if (!ready)
+  // Start the second rail once the leading one has actually opened the gap up,
+  // not once it has finished. They are allowed to travel together; what they
+  // must not do is set off together while they are close.
+  const float gap = this->position_(Rail::BOTTOM) - this->position_(Rail::TOP);
+  const bool settled = !this->motor_(this->lead_)->is_moving() &&
+                       std::fabs(lead_position - this->lead_target_) <= 1.0f;
+  if (gap < this->start_gap_ && !settled)
     return;
 
-  ESP_LOGD(TAG, "First rail has made room, starting the second");
+  ESP_LOGD(TAG, "First rail has opened a %.0f%% gap, starting the second", gap);
   if (!this->command_(this->trail_, this->trail_target_)) {
     this->abandon_("the second rail did not accept its command");
     return;
@@ -408,10 +389,10 @@ void MotionblindsBLETdbu::check_clearance_() {
   if (gap >= this->min_gap_)
     return;
 
-  // Reactive by nature: this sees a breach only once it has happened, which is
-  // why the targets carry a safety margin. It still covers everything the
-  // planning cannot, including moves this component never issued.
-  ESP_LOGE(TAG, "Rails are only %.1f%% apart, stopping both", gap);
+  // Only a real breach counts. On most of these blinds the rails stack against
+  // each other perfectly happily, so min_gap defaults to zero and this fires
+  // only when the bottom rail has ended up above the top one.
+  ESP_LOGE(TAG, "Rails are %.1f%% apart, closer than the %.0f%% allowed; stopping both", gap, this->min_gap_);
   this->top_->request_stop();
   this->bottom_->request_stop();
   if (this->phase_ != Phase::IDLE)

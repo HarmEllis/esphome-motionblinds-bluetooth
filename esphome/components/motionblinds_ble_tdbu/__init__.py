@@ -65,6 +65,7 @@ CONF_BOTTOM_MOTOR = "bottom_motor"
 CONF_FABRIC = "fabric"
 CONF_MIN_GAP = "min_gap"
 CONF_SAFETY_MARGIN = "safety_margin"
+CONF_START_GAP = "start_gap"
 CONF_CLEARANCE_TIMEOUT = "clearance_timeout"
 CONF_LEASE_TIMEOUT = "lease_timeout"
 
@@ -114,11 +115,18 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FABRIC, default="BETWEEN_RAILS"): cv.enum(
                 FABRICS, upper=True, space="_"
             ),
-            # The rails cannot physically meet: stacked fabric takes up room.
-            cv.Optional(CONF_MIN_GAP, default="5%"): cv.percentage,
-            # Added on top of min_gap when computing targets, to absorb the
-            # motors' whole-numbered feedback and their unspecified overshoot.
-            cv.Optional(CONF_SAFETY_MARGIN, default="2%"): cv.percentage,
+            # How close the rails may be *commanded*. Zero on most of these
+            # blinds: the rails stack against each other at either end, and the
+            # motors stop themselves if they do meet. Raise it only for a blind
+            # whose rails genuinely cannot come together.
+            cv.Optional(CONF_MIN_GAP, default="0%"): cv.percentage,
+            # Added on top of min_gap when computing targets, to absorb
+            # whole-numbered feedback and motor overshoot.
+            cv.Optional(CONF_SAFETY_MARGIN, default="0%"): cv.percentage,
+            # Observed gap below which two rails may not be set off at the same
+            # moment. They may travel together; starting together while they are
+            # close is what drives them into each other.
+            cv.Optional(CONF_START_GAP, default="10%"): cv.percentage,
             cv.Optional(
                 CONF_CLEARANCE_TIMEOUT, default="60s"
             ): cv.positive_time_period_milliseconds,
@@ -143,6 +151,7 @@ async def to_code(config):
     cg.add(var.set_fabric(config[CONF_FABRIC]))
     cg.add(var.set_min_gap(config[CONF_MIN_GAP] * 100.0))
     cg.add(var.set_safety_margin(config[CONF_SAFETY_MARGIN] * 100.0))
+    cg.add(var.set_start_gap(config[CONF_START_GAP] * 100.0))
     cg.add(var.set_clearance_timeout(config[CONF_CLEARANCE_TIMEOUT]))
     cg.add(var.set_lease_timeout(config[CONF_LEASE_TIMEOUT]))
 

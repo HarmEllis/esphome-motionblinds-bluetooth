@@ -45,6 +45,8 @@ class MotionblindsBLETdbu : public Component {
   void set_fabric(Fabric fabric) { this->fabric_ = fabric; }
   void set_min_gap(float min_gap) { this->min_gap_ = min_gap; }
   void set_safety_margin(float margin) { this->safety_margin_ = margin; }
+  /// Observed gap below which two rails may not be started at the same moment.
+  void set_start_gap(float gap) { this->start_gap_ = gap; }
   void set_clearance_timeout(uint32_t ms) { this->clearance_timeout_ = ms; }
   void set_lease_timeout(uint32_t ms) { this->lease_timeout_ = ms; }
 
@@ -85,9 +87,8 @@ class MotionblindsBLETdbu : public Component {
  protected:
   /// What the coordinator is waiting for before the trailing rail may start.
   enum class Wait : uint8_t {
-    NONE,       ///< nothing else to do
-    CLEARANCE,  ///< the leading rail only has to pass far enough
-    SETTLED,    ///< the leading rail must reach its target first
+    NONE,       ///< there is already room; both may run together
+    CLEARANCE,  ///< wait until the leading rail has opened the gap up
   };
 
   enum class Phase : uint8_t {
@@ -137,8 +138,9 @@ class MotionblindsBLETdbu : public Component {
   MotionblindsBLEMotor *bottom_{nullptr};
 
   Fabric fabric_{Fabric::BETWEEN_RAILS};
-  float min_gap_{5.0f};
-  float safety_margin_{2.0f};
+  float min_gap_{0.0f};
+  float safety_margin_{0.0f};
+  float start_gap_{10.0f};
   uint32_t clearance_timeout_{60000};
   uint32_t lease_timeout_{180000};
   Geometry geometry_{};
