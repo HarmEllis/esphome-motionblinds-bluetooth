@@ -95,6 +95,11 @@ void MotionblindsBLEMotor::setup() {
     }
     ESP_LOGI(TAG, "[%s] Restored position %u and battery %u%% from before the restart", this->label_,
              static_cast<unsigned>(this->raw_position_), static_cast<unsigned>(this->battery_percentage_));
+  } else {
+    // Silence here used to be indistinguishable from "restored nothing
+    // interesting", which made it impossible to tell a motor that had never
+    // been heard from a store that was not being written.
+    ESP_LOGI(TAG, "[%s] Nothing stored from before the restart", this->label_);
   }
 }
 
@@ -761,6 +766,10 @@ void MotionblindsBLEMotor::handle_notification_(const uint8_t *data, uint16_t le
 
 void MotionblindsBLEMotor::apply_notification_(const Notification &notification) {
   const uint8_t previous = this->raw_position_;
+  // A motor reporting for the first time is worth storing even when the value
+  // it reports happens to equal the zero it was initialised with, which is
+  // exactly the case for a rail parked at the top of its travel.
+  const bool first_reading = !this->has_position_;
 
   this->raw_position_ = notification.position;
   this->raw_tilt_ = notification.tilt;
@@ -811,7 +820,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
         this->moving_ = true;
       }
     }
-  } else if (previous != this->raw_position_) {
+  } else if (first_reading || previous != this->raw_position_) {
     this->save_position_();
   }
 
