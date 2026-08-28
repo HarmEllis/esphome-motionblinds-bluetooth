@@ -267,6 +267,18 @@ Note also that `esp32_ble: max_connections:` is the number of connections; ESPHo
 adds the advertising/scanning instance on top of it. Six motors is
 `max_connections: 6`, not seven.
 
+### A boot log cannot be read from Home Assistant or the dashboard
+
+Anything logged from `setup()` is emitted before the API is up, so neither the
+ESPHome dashboard (which connects over that API) nor Home Assistant's device-log
+subscription ever sees it. Chasing a startup fault through those log lines is
+therefore impossible; only a serial cable would show them.
+
+State that matters at startup has to be reported from `dump_config()` instead,
+which runs once the API is connected. Note that `ESP_LOGCONFIG` is compiled out
+at log level INFO, so a condition someone needs to see while running at INFO
+must be a warning, not a config line.
+
 ### Preferences are only flushed on a clean shutdown
 
 There is no periodic sync. Anything that reboots without getting that far

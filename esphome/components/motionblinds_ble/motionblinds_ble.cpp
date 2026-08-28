@@ -87,7 +87,8 @@ void MotionblindsBLEMotor::setup() {
   this->state_pref_ = global_preferences->make_preference<PersistedState>(this->preference_key_);
 
   PersistedState stored{};
-  if (this->state_pref_.load(&stored)) {
+  this->restored_ = this->state_pref_.load(&stored);
+  if (this->restored_) {
     // Restored for continuity only. Explicitly not fresh: a remote or the
     // vendor app can move a rail while this node is powered off, so a restored
     // position must never be the basis for a collision decision.
@@ -128,6 +129,16 @@ void MotionblindsBLEMotor::dump_config() {
                 static_cast<unsigned>(this->disconnect_delay_ / 1000),
                 static_cast<unsigned>(this->discovery_timeout_ / 1000), YESNO(this->fast_connect_),
                 YESNO(this->recover_by_reboot_));
+  if (this->restored_) {
+    ESP_LOGCONFIG(TAG, "  Stored state: position %u, battery %u%%", static_cast<unsigned>(this->raw_position_),
+                  static_cast<unsigned>(this->battery_percentage_));
+  } else {
+    // A warning rather than a config line on purpose: config lines are compiled
+    // out at log level INFO, and this is precisely the condition someone
+    // running at INFO needs to see. A blind that does not know where its rail
+    // is cannot be moved safely until it has been asked.
+    ESP_LOGW(TAG, "[%s] Nothing restored from flash; this rail does not know where it is", this->label_);
+  }
   if (this->time_ == nullptr)
     ESP_LOGE(TAG, "  No time source: commands cannot be encrypted");
 }
@@ -869,7 +880,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
     this->battery_percentage_ = notification.battery_percentage;
     this->battery_charging_ = notification.charging;
     if (changed)
-      this->save_position_();
+      this->publish_();
   }
   if (notification.has_speed) {
     this->has_speed_ = true;
@@ -921,7 +932,11 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
       }
     }
   } else if (first_reading || previous != this->raw_position_) {
-    this->save_position_();
+    // Deliberately not written to flash here. A rail driven by the remote emits
+    // a frame for every percent it travels, and committing each one turned what
+    // the comment on save_position_() calls "a handful of writes a day" into
+    // thousands. The disconnect below writes whatever was learned, once.
+    this->publish_();
   }
 
   this->last_activity_ = millis();
@@ -1020,11 +1035,22 @@ void MotionblindsBLEMotor::save_position_() {
   this->state_pref_.save(&stored);
   // Committed straight away rather than left in the pending buffer. ESPHome
   // only flushes preferences on a clean shutdown, so without this every reset
-  // that does not get that far — a crash, a power cut, some reflashes — throws
+  // that does not get that far -- a crash, a power cut, some reflashes -- throws
   // the position away and the blind comes back not knowing where its rails
-  // are. Saves are already limited to a completed move or a disconnect, so
-  // this is a handful of writes a day.
-  global_preferences->sync();
+  // are. Saves happen when a move completes and when the link is dropped, so
+  // this really is a handful of writes a day.
+  //
+  // The result is checked. A store that has stopped accepting writes is
+  // otherwise completely silent: everything keeps working until the next
+  // restart, when every rail comes back not knowing where it is.
+  if (!global_preferences->sync()) {
+    if (!this->save_failed_) {
+      ESP_LOGE(TAG, "[%s] Flash store refused the write; nothing will survive a restart", this->label_);
+      this->save_failed_ = true;
+    }
+    return;
+  }
+  this->save_failed_ = false;
 }
 
 void MotionblindsBLEMotor::publish_() { this->update_callback_.call(); }

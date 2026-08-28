@@ -230,6 +230,12 @@ class MotionblindsBLEMotor : public Component {
   bool status_backfilled_{false};
   bool ever_status_{false};
   uint32_t last_status_at_{0};
+  /// What the flash store did at boot, and whether it has refused a write
+  /// since. Both are reported by dump_config, because the alternative -- a log
+  /// line during setup() -- is emitted before the API is up and can therefore
+  /// never be read from Home Assistant or the ESPHome dashboard.
+  bool restored_{false};
+  bool save_failed_{false};
   const char *label_{""};
 
   MotorState state_{MotorState::IDLE};
