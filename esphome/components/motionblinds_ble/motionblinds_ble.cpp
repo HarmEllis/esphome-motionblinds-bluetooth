@@ -148,8 +148,13 @@ void MotionblindsBLEMotor::dump_config() {
     ESP_LOGW(TAG, "[%s] Flash store was read but holds no position; this rail does not know where it is",
              this->label_);
   } else {
-    ESP_LOGI(TAG, "[%s] Restored position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
-             static_cast<unsigned>(this->battery_percentage_));
+    if (this->has_battery_) {
+      ESP_LOGI(TAG, "[%s] Restored position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
+               static_cast<unsigned>(this->battery_percentage_));
+    } else {
+      ESP_LOGI(TAG, "[%s] Restored position %u, no battery reading", this->label_,
+               static_cast<unsigned>(this->raw_position_));
+    }
   }
   if (this->time_ == nullptr)
     ESP_LOGE(TAG, "  No time source: commands cannot be encrypted");
@@ -185,6 +190,7 @@ bool MotionblindsBLEMotor::request_stop() {
   this->settle_matches_ = 0;
   this->moving_ = false;
   this->travel_direction_ = 0;
+  this->publish_();
 
   if (this->state_ == MotorState::READY && this->command_handle_ != 0) {
     if (this->write_command_(Command::STOP, 0)) {
@@ -316,7 +322,13 @@ void MotionblindsBLEMotor::loop() {
   // motor holding a perfectly good restored position while its cover sat on the
   // 100% every cover starts at -- restored and invisible, which reads exactly
   // like not restored at all.
-  if (!this->announced_) {
+  //
+  // Gated on the whole application being set up rather than on merely reaching
+  // loop(): ESPHome only promises that a component's own setup precedes its own
+  // loop, and its slow-setup path will run an early component's loop() while
+  // others are still being set up. Today's priorities happen to make that
+  // harmless, but a setup_priority override in YAML would not.
+  if (!this->announced_ && App.is_setup_complete()) {
     this->announced_ = true;
     this->publish_();
   }
@@ -760,6 +772,12 @@ void MotionblindsBLEMotor::dispatch_() {
                                          ? 1
                                          : -1);
   }
+
+  // Say that a move has started. On a motor that was already connected no state
+  // transition follows, so without this the covers would go on reporting idle
+  // until the first frame came back -- and a silent motor would look idle for
+  // the whole travel budget.
+  this->publish_();
 }
 
 bool MotionblindsBLEMotor::write_command_(Command command, uint8_t argument) {
@@ -931,6 +949,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
   this->raw_position_ = notification.position;
   this->raw_tilt_ = notification.tilt;
   this->end_positions_ = notification.end_positions;
+  this->has_end_positions_ = true;
   this->has_position_ = true;
   this->position_fresh_ = true;
 
@@ -1122,8 +1141,13 @@ void MotionblindsBLEMotor::save_position_() {
   // that carries no position is worth a warning: it is how a working store ends
   // up holding a rail that does not know where it is.
   if (this->has_position_) {
-    ESP_LOGI(TAG, "[%s] Saved position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
-             static_cast<unsigned>(this->battery_percentage_));
+    if (this->has_battery_) {
+      ESP_LOGI(TAG, "[%s] Saved position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
+               static_cast<unsigned>(this->battery_percentage_));
+    } else {
+      ESP_LOGI(TAG, "[%s] Saved position %u, no battery reading", this->label_,
+               static_cast<unsigned>(this->raw_position_));
+    }
   } else {
     ESP_LOGW(TAG, "[%s] Saved without a position; a restart will not know where this rail is", this->label_);
   }

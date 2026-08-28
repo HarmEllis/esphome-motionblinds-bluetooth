@@ -54,8 +54,11 @@ void MotionblindsBLECover::update_state_() {
   if (this->motor_ == nullptr)
     return;
 
-  // See the top-down bottom-up cover: an unknown position is published as
-  // nothing at all rather than as the default, which reads as fully open.
+  // See the top-down bottom-up cover: nothing is published while the position
+  // is unknown. Note what that does and does not achieve -- Home Assistant will
+  // still show 100%, because the native API always sends a cover's position and
+  // a Cover is constructed at fully open. The freshness and status entities are
+  // the authoritative ones.
   const float window = this->motor_->window_position();
   if (std::isnan(window))
     return;

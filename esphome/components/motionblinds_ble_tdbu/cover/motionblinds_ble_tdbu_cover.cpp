@@ -65,10 +65,16 @@ void MotionblindsBLETdbuCover::update_state_() {
 
   // Nothing is published while the position is unknown. A cover position is a
   // plain number with no room for "I do not know", so publishing anything at
-  // all would state a position the component does not have — and the default
-  // reads as fully open, which is the most misleading answer available. Leaving
-  // the entity unknown is the honest one, and it is what the blind's status
-  // text says too.
+  // all would state a position the component does not have.
+  //
+  // Be clear about the limit of this, because the earlier wording here was
+  // wrong and cost an evening: withholding the publish does NOT leave the
+  // entity unknown. `Cover` is constructed at fully open and the native API
+  // serialises a cover's position unconditionally, with no missing-state bit --
+  // so an unknown rail still reads as 100% in Home Assistant, and a restored
+  // position that never got published looks exactly like a lost one. The blind's
+  // status text and the freshness binary sensor are the entities that can say
+  // "unknown", and they are the ones to believe.
   if (std::isnan(value))
     return;
 

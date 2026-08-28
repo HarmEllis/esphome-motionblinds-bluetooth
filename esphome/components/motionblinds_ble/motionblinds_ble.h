@@ -141,6 +141,10 @@ class MotionblindsBLEMotor : public Component {
   /// -1 while travelling towards the top of the window, +1 towards the bottom,
   /// 0 when not moving.
   int8_t travel_direction() const { return this->travel_direction_; }
+  /// Whether the motor has told us about its end positions at all. Nothing
+  /// persists this, so before the first notification the answer is "no idea",
+  /// which is not the same as "uncalibrated".
+  bool calibration_known() const { return this->has_end_positions_; }
   bool calibrated() const { return this->end_positions_ == EndPositions::BOTH; }
   bool favorite_set() const { return this->favorite_set_; }
 
@@ -290,6 +294,7 @@ class MotionblindsBLEMotor : public Component {
   uint8_t raw_position_{0};
   uint8_t raw_tilt_{0};
   EndPositions end_positions_{EndPositions::NONE};
+  bool has_end_positions_{false};
   bool favorite_set_{false};
 
   bool has_signal_{false};

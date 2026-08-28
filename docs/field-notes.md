@@ -319,6 +319,21 @@ does too.
 
 ## Home Assistant
 
+### Withholding a cover publish does not make it unknown
+
+The comments in both cover platforms used to claim that not publishing left the
+entity unknown. It does not. `Cover` is constructed at fully open, and the
+native API serialises a cover's position unconditionally with no missing-state
+bit, so an unknown rail is exported as 100% regardless. That is why a restored
+position that was never published looked identical to a lost one for most of an
+evening.
+
+The freshness binary sensor and the blind's status text are the entities that
+can express "unknown". They are the ones to believe, and the ones an automation
+should branch on -- noting that the status text reports *freshness*, which goes
+false a few seconds after every disconnect, and not whether a position is known
+at all.
+
 ### A cover position cannot say "unknown"
 
 `Cover::Cover() : position{COVER_OPEN}` — an entity that has never published
