@@ -139,7 +139,7 @@ CONFIG_SCHEMA = cv.All(
                 CONF_CONNECT_TIMEOUT, default="20s"
             ): cv.positive_time_period_milliseconds,
             cv.Optional(
-                CONF_HANDSHAKE_TIMEOUT, default="8s"
+                CONF_HANDSHAKE_TIMEOUT, default="15s"
             ): cv.positive_time_period_milliseconds,
             cv.Optional(
                 CONF_OPERATION_TIMEOUT, default="180s"

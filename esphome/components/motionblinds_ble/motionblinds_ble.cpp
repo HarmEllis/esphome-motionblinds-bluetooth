@@ -442,7 +442,21 @@ void MotionblindsBLEMotor::dispatch_() {
         break;
 
       case Verification::SETTLED:
-        if (now - this->command_sent_at_ > this->command_budget_)
+        if (now - this->command_sent_at_ <= this->command_budget_)
+          break;
+        if (this->settle_rechecked_) {
+          this->fail_("motor never reached the commanded position");
+          break;
+        }
+        // Running out of travel time is not proof that the rail did not get
+        // there. These motors report when something changes, so a move that
+        // finished quietly, or one whose remembered start position was wrong,
+        // looks identical to one that never happened. Ask before condemning it.
+        ESP_LOGD(TAG, "[%s] No arrival reported yet, asking where it is", this->label_);
+        this->settle_rechecked_ = true;
+        this->command_sent_at_ = now;
+        this->command_budget_ = COMMAND_ACK_TIMEOUT_MS;
+        if (!this->write_command_(Command::STATUS_QUERY, 0))
           this->fail_("motor never reached the commanded position");
         break;
     }
@@ -466,7 +480,18 @@ void MotionblindsBLEMotor::dispatch_() {
   this->command_in_flight_ = true;
   this->command_sent_at_ = now;
   this->settle_matches_ = 0;
+  this->settle_rechecked_ = false;
   this->last_activity_ = now;
+
+  // A rail already standing on the requested position has nothing to report,
+  // so waiting for it to announce an arrival would always time out. Send the
+  // command anyway — the remembered position may be wrong — but do not hold the
+  // operation open waiting for movement that was never asked for.
+  if (command.command == Command::PERCENT && this->has_position_ && this->raw_position_ == command.target) {
+    ESP_LOGD(TAG, "[%s] Already at %u, not waiting for it to move", this->label_,
+             static_cast<unsigned>(command.target));
+    this->in_flight_.verification = Verification::ACKED;
+  }
 
   // Fixed here, not recomputed each loop: a budget derived from the live
   // position shrinks as the rail approaches, and would cut a long move short

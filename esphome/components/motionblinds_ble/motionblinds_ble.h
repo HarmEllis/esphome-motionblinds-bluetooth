@@ -198,7 +198,7 @@ class MotionblindsBLEMotor : public Component {
   uint32_t disconnect_delay_{15000};
   uint32_t discovery_timeout_{30000};
   uint32_t connect_timeout_{20000};
-  uint32_t handshake_timeout_{8000};
+  uint32_t handshake_timeout_{15000};
   uint32_t operation_timeout_{120000};
   uint32_t stuck_connect_timeout_{60000};
   uint32_t recover_after_{300000};
@@ -230,6 +230,7 @@ class MotionblindsBLEMotor : public Component {
   std::vector<PendingCommand> queue_;
   bool command_in_flight_{false};
   bool stuck_reported_{false};
+  bool settle_rechecked_{false};
   int8_t travel_direction_{0};
   PendingCommand in_flight_{};
   uint8_t settle_matches_{0};

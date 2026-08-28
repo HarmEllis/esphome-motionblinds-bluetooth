@@ -145,7 +145,7 @@ cover:
 | `disconnect_delay` | no | `15s` | Idle time before the connection is dropped. Only starts once no move is in progress. |
 | `discovery_timeout` | no | `30s` | Listening time per round. Counted only while the scanner is actually running, because the tracker stops scanning whenever any client is connecting. |
 | `connect_timeout` | no | `20s` | |
-| `handshake_timeout` | no | `8s` | |
+| `handshake_timeout` | no | `15s` | Keying and the first status frame. Generous on purpose: six motors, Wi-Fi and logging share one radio, and a connection that is merely slow is not a failure. |
 | `operation_timeout` | no | `120s` | Total budget for one request, across every retry. |
 | `discovery_rounds` | no | `3` | Bounded listening rounds before giving up, with a growing pause between them. One window is fragile for a motor that advertises weakly; this is not an unbounded retry. |
 | `stuck_connect_timeout` | no | `60s` | See *Known limitations*. |
