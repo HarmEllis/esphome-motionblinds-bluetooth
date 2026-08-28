@@ -223,6 +223,13 @@ class MotionblindsBLEMotor : public Component {
   uint8_t discovery_rounds_{3};
   bool recover_by_reboot_{false};
   bool fast_connect_{false};
+  /// Whether a STATUS frame arrived during this connection, and whether the
+  /// backfill query has already been tried. Only STATUS carries battery, speed
+  /// and favourite; FEEDBACK does not.
+  bool status_seen_{false};
+  bool status_backfilled_{false};
+  bool ever_status_{false};
+  uint32_t last_status_at_{0};
   const char *label_{""};
 
   MotorState state_{MotorState::IDLE};

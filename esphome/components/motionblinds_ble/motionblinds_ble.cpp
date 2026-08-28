@@ -54,6 +54,12 @@ static const uint8_t SETTLE_FRAMES = 2;
 /// maintainer proposed for this exact fault (LennP/motionblindsble#5, against
 /// home-assistant/core#153218). Only the query is repeated — that PR does not
 /// re-send the key, and neither does this.
+/// How stale battery, speed and favourite may get before a fast_connect
+/// session spends a query on refreshing them. They change over days, so this is
+/// deliberately long: the query holds the link open, and a held link is exactly
+/// what makes the next motor slow to find.
+static const uint32_t STATUS_REFRESH_MS = 3600000;
+
 static const uint32_t HANDSHAKE_RETRY_MS = 3000;
 static const uint8_t MAX_HANDSHAKE_ATTEMPTS = 3;
 
@@ -407,6 +413,19 @@ void MotionblindsBLEMotor::loop() {
 
     case MotorState::READY:
       this->dispatch_();
+      // Only a STATUS frame carries battery, speed and favourite; the FEEDBACK
+      // frames a move produces do not. So a fast_connect session that did
+      // nothing but move would leave those blank -- which is the very symptom
+      // this component was written to get away from. Ask once, after the work
+      // is done and before the link is dropped, so it costs waiting time the
+      // motor was going to spend idle anyway.
+      if (this->fast_connect_ && !this->status_seen_ && !this->status_backfilled_ && this->queue_.empty() &&
+          !this->command_in_flight_ &&
+          (!this->ever_status_ || now - this->last_status_at_ > STATUS_REFRESH_MS)) {
+        this->status_backfilled_ = true;
+        this->request_status();
+        break;
+      }
       if (this->queue_.empty() && !this->command_in_flight_ && !this->leased() &&
           now - this->last_activity_ > this->disconnect_delay_) {
         ESP_LOGD(TAG, "[%s] Idle, disconnecting", this->label_);
@@ -857,6 +876,12 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
   if (notification.has_favorite)
     this->favorite_set_ = notification.favorite_set;
 
+  if (notification.type == NotificationType::STATUS) {
+    this->status_seen_ = true;
+    this->ever_status_ = true;
+    this->last_status_at_ = millis();
+  }
+
   if (this->handshake_ == Handshake::WAIT_STATUS && notification.type == NotificationType::STATUS) {
     this->handshake_ = Handshake::DONE;
     this->set_state_(MotorState::READY);
@@ -948,6 +973,8 @@ void MotionblindsBLEMotor::abort_() {
   this->notify_handle_ = 0;
   this->config_descriptor_handle_ = 0;
   this->handshake_ = Handshake::NONE;
+  this->status_seen_ = false;
+  this->status_backfilled_ = false;
   this->mark_stale_();
 
   if (this->ble_client_ != nullptr) {

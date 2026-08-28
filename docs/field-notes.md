@@ -114,6 +114,13 @@ reporting, and a first move on a motor with no remembered position still takes
 the slow path regardless, because the travel budget depends on knowing where the
 rail started.
 
+Caught on hardware, not in review: skipping the query also skips the only frame
+that carries battery, speed and favourite. Feedback frames during a move do not
+have them, so the first fast_connect move left the battery on `unknown` --
+precisely the fault this component was built to escape. The query is now sent
+after the work instead of before it, and only when those values are over an hour
+old, so it uses idle time rather than adding to the wait.
+
 ### Rails move slowly, so travel budgets must be generous
 
 A rail took four seconds to move a few percent. Budgets of seven and eight

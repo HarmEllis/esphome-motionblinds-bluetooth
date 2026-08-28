@@ -505,6 +505,15 @@ distance to cover and a budget measured from a position that was never observed
 can cut a legitimate move short. And it changes nothing when the motor has no
 work waiting, such as a refresh button press.
 
+One consequence needs handling and is handled for you. Battery, speed and
+favourite arrive only in a status frame; the feedback frames a move produces do
+not carry them. A session that skipped the status query and then only moved
+would leave those blank — the exact symptom this component exists to avoid. So
+when the work is done and the values are older than an hour, the query is sent
+then, before the link is dropped, using time the motor was going to spend idle.
+Hourly rather than every time, because a held link is what makes the next motor
+slow to find.
+
 It pairs naturally with `optimistic: true` on the blind — both are the same
 trade, made at different levels: act on what is remembered rather than pay to
 re-establish it first.
