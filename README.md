@@ -179,6 +179,38 @@ meaning differs:
 | `min_gap` | no | `0%` | How close the rails may be commanded. Zero by default: on most of these blinds the rails stack against each other at either end, and the motors stop themselves if they meet. Raise it only for a blind whose rails genuinely cannot come together. |
 | `safety_margin` | no | `0%` | Added on top of `min_gap` when computing targets, for whole-numbered feedback and motor overshoot. |
 | `start_gap` | no | `10%` | Observed gap below which two rails may not be *set off* at the same moment. They may travel together; starting together while they are close is what drives them into each other. |
+| `optimistic` | no | `false` | Trust the remembered rail positions instead of reading both motors before every move. See below — this is the single largest influence on how responsive the blind feels. |
+
+### `optimistic`: responsiveness versus knowing where the rails are
+
+By default (`optimistic: false`) nothing moves until **both** motors have
+reported their position during the current connection. That is the honest
+position to take: these motors can also be moved by their own remote or by the
+vendor app, and a remembered position is then simply wrong.
+
+It is also **slow**, and the cost is easy to underestimate. Nudging one rail
+means waking both motors, and the Bluetooth stack connects to one device at a
+time and stops scanning while it does, so the two connections happen one after
+the other before anything moves at all. Twenty to sixty seconds for a single
+rail is normal, and worse for a motor with a weak signal.
+
+With `optimistic: true`, positions are taken from what the component last saw
+and remembers across reboots. A move is planned and sent immediately, only the
+rails that actually move are woken, and positions are still refreshed on every
+connection — each one begins with a status query, and further frames arrive
+while the blind travels.
+
+> **Only set this if nothing else moves the blind.** If someone uses the
+> physical remote, or the vendor app, while the node is not connected, the
+> remembered positions become wrong and stay wrong until that rail is next
+> commanded. The component will then plan a move — including which rail may
+> start first — from a picture of the blind that does not match reality.
+>
+> Two things still hold either way: a rail is never commanded past the other
+> one, and the clearance watchdog stops both rails if it sees them crossing
+> while connected. What optimistic mode gives up is the guarantee that the
+> picture was correct *before* the move started. Press a rail's refresh button,
+> or command it, to resynchronise.
 | `clearance_timeout` | no | `60s` | How long the second rail waits for the first to make room. |
 | `lease_timeout` | no | `180s` | Upper bound on holding both connections open. |
 | `diagnostics` | no | | Builds the per-rail diagnostic entities; see below. |

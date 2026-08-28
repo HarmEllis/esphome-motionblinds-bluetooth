@@ -47,6 +47,10 @@ class MotionblindsBLETdbu : public Component {
   void set_safety_margin(float margin) { this->safety_margin_ = margin; }
   /// Observed gap below which two rails may not be started at the same moment.
   void set_start_gap(float gap) { this->start_gap_ = gap; }
+  /// Trust the remembered rail positions instead of re-reading them from both
+  /// motors before every move. See the README: this trades correctness under a
+  /// physical remote for a very large reduction in latency.
+  void set_optimistic(bool optimistic) { this->optimistic_ = optimistic; }
   void set_clearance_timeout(uint32_t ms) { this->clearance_timeout_ = ms; }
   void set_lease_timeout(uint32_t ms) { this->lease_timeout_ = ms; }
 
@@ -129,7 +133,7 @@ class MotionblindsBLETdbu : public Component {
   void advance_();
   void finish_();
   void abandon_(const char *reason);
-  void acquire_leases_();
+  void acquire_lease_(Rail rail);
   void release_leases_();
   void check_clearance_();
   void on_motor_update_();
@@ -141,6 +145,7 @@ class MotionblindsBLETdbu : public Component {
   float min_gap_{0.0f};
   float safety_margin_{0.0f};
   float start_gap_{10.0f};
+  bool optimistic_{false};
   uint32_t clearance_timeout_{60000};
   uint32_t lease_timeout_{180000};
   Geometry geometry_{};
@@ -159,7 +164,8 @@ class MotionblindsBLETdbu : public Component {
   Phase phase_{Phase::IDLE};
   uint32_t phase_since_{0};
   uint32_t operation_since_{0};
-  bool leases_held_{false};
+  bool leased_top_{false};
+  bool leased_bottom_{false};
   const char *last_error_{nullptr};
 
   Rail lead_{Rail::TOP};

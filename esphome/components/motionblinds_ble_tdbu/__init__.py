@@ -66,6 +66,7 @@ CONF_FABRIC = "fabric"
 CONF_MIN_GAP = "min_gap"
 CONF_SAFETY_MARGIN = "safety_margin"
 CONF_START_GAP = "start_gap"
+CONF_OPTIMISTIC = "optimistic"
 CONF_CLEARANCE_TIMEOUT = "clearance_timeout"
 CONF_LEASE_TIMEOUT = "lease_timeout"
 
@@ -127,6 +128,10 @@ CONFIG_SCHEMA = cv.All(
             # moment. They may travel together; starting together while they are
             # close is what drives them into each other.
             cv.Optional(CONF_START_GAP, default="10%"): cv.percentage,
+            # Trust the remembered positions instead of re-reading both motors
+            # before every move. Much faster, and wrong if anything else moves
+            # the blind. See the README.
+            cv.Optional(CONF_OPTIMISTIC, default=False): cv.boolean,
             cv.Optional(
                 CONF_CLEARANCE_TIMEOUT, default="60s"
             ): cv.positive_time_period_milliseconds,
@@ -152,6 +157,7 @@ async def to_code(config):
     cg.add(var.set_min_gap(config[CONF_MIN_GAP] * 100.0))
     cg.add(var.set_safety_margin(config[CONF_SAFETY_MARGIN] * 100.0))
     cg.add(var.set_start_gap(config[CONF_START_GAP] * 100.0))
+    cg.add(var.set_optimistic(config[CONF_OPTIMISTIC]))
     cg.add(var.set_clearance_timeout(config[CONF_CLEARANCE_TIMEOUT]))
     cg.add(var.set_lease_timeout(config[CONF_LEASE_TIMEOUT]))
 

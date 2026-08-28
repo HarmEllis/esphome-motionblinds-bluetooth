@@ -204,21 +204,26 @@ void MotionblindsBLETdbu::stop_all() {
 void MotionblindsBLETdbu::begin_() {
   this->operation_since_ = millis();
   this->last_error_ = nullptr;
-  this->acquire_leases_();
 
-  // A remembered position is not evidence of where a rail is now: a remote or
-  // the vendor app can move one while this node is disconnected. Ask both
-  // motors before planning anything.
-  if (!this->fresh_(Rail::TOP) || !this->fresh_(Rail::BOTTOM)) {
-    ESP_LOGD(TAG, "Refreshing both rail positions before moving");
-    this->top_->request_status();
-    this->bottom_->request_status();
-    this->phase_ = Phase::REFRESHING;
-    this->phase_since_ = millis();
+  // Optimistic: the remembered positions are taken as true, so a move can be
+  // planned and sent straight away. Only a rail that has never reported at all
+  // still has to be read first — there is nothing to be optimistic about.
+  if (this->optimistic_ && this->positions_known()) {
+    this->plan_and_dispatch_();
     return;
   }
 
-  this->plan_and_dispatch_();
+  // Otherwise a remembered position is not evidence of where a rail is now: a
+  // remote or the vendor app can move one while this node is disconnected. Both
+  // motors are read before anything is planned, which means waking both and
+  // waiting for each to connect in turn.
+  ESP_LOGD(TAG, "Refreshing both rail positions before moving");
+  this->acquire_lease_(Rail::TOP);
+  this->acquire_lease_(Rail::BOTTOM);
+  this->top_->request_status();
+  this->bottom_->request_status();
+  this->phase_ = Phase::REFRESHING;
+  this->phase_since_ = millis();
 }
 
 void MotionblindsBLETdbu::plan_and_dispatch_() {
@@ -307,6 +312,9 @@ bool MotionblindsBLETdbu::command_(Rail rail, float window_target) {
   if (motor == nullptr)
     return false;
 
+  // Only a rail that is actually being commanded needs its connection held.
+  this->acquire_lease_(rail);
+
   const Rail other = rail == Rail::TOP ? Rail::BOTTOM : Rail::TOP;
   const uint8_t raw = this->geometry_.raw_target(rail, window_target, this->position_(other));
   const float achieved = motor->rail_range().to_window(static_cast<float>(raw));
@@ -360,23 +368,31 @@ void MotionblindsBLETdbu::abandon_(const char *reason) {
 
 // ---------------------------------------------------------------- leases
 
-void MotionblindsBLETdbu::acquire_leases_() {
-  if (this->leases_held_)
+void MotionblindsBLETdbu::acquire_lease_(Rail rail) {
+  // Hold the connection open for the whole operation: without it the idle timer
+  // can disconnect a motor while its rail is still travelling, ending the
+  // position updates the clearance watchdog depends on.
+  //
+  // Taken per rail rather than for both, because a lease wakes a motor. Leasing
+  // the rail that is not going to move meant every move woke two motors and,
+  // since the tracker connects one client at a time, waited out two connections
+  // to move one rail.
+  bool &held = rail == Rail::TOP ? this->leased_top_ : this->leased_bottom_;
+  if (held)
     return;
-  // Hold both connections open for the whole operation. Without this the idle
-  // timer can disconnect a motor while its rail is still travelling, which
-  // would end the position updates the clearance watchdog depends on.
-  this->top_->acquire_lease();
-  this->bottom_->acquire_lease();
-  this->leases_held_ = true;
+  this->motor_(rail)->acquire_lease();
+  held = true;
 }
 
 void MotionblindsBLETdbu::release_leases_() {
-  if (!this->leases_held_)
-    return;
-  this->top_->release_lease();
-  this->bottom_->release_lease();
-  this->leases_held_ = false;
+  if (this->leased_top_) {
+    this->top_->release_lease();
+    this->leased_top_ = false;
+  }
+  if (this->leased_bottom_) {
+    this->bottom_->release_lease();
+    this->leased_bottom_ = false;
+  }
 }
 
 // -------------------------------------------------------------- watchdog

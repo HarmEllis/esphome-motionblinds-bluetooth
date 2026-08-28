@@ -58,6 +58,9 @@ motionblinds_ble_tdbu:
     fabric: between_rails
     min_gap: 5%
     safety_margin: 2%
+    # Nothing but this component moves this blind, so the remembered positions
+    # can be trusted and a move does not have to wait for both motors first.
+    optimistic: true
     # Builds battery, signal, connection, position freshness and a refresh
     # button for both rails.
     diagnostics:
