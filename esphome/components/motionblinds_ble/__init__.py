@@ -70,6 +70,7 @@ CONF_STUCK_CONNECT_TIMEOUT = "stuck_connect_timeout"
 CONF_RECOVER_BY_REBOOT = "recover_by_reboot"
 CONF_RECOVER_AFTER = "recover_after"
 CONF_DISCOVERY_ROUNDS = "discovery_rounds"
+CONF_FAST_CONNECT = "fast_connect"
 
 
 def _validate_mac_code(value):
@@ -156,6 +157,7 @@ CONFIG_SCHEMA = cv.All(
             # weakly; several bounded rounds are not the same thing as an
             # unbounded retry.
             cv.Optional(CONF_DISCOVERY_ROUNDS, default=3): cv.int_range(min=1, max=10),
+            cv.Optional(CONF_FAST_CONNECT, default=False): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -277,6 +279,7 @@ async def to_code(config):
     cg.add(var.set_label(str(config[CONF_ID])))
     cg.add(var.set_blind_type(config[CONF_BLIND_TYPE]))
     cg.add(var.set_discovery_rounds(config[CONF_DISCOVERY_ROUNDS]))
+    cg.add(var.set_fast_connect(config[CONF_FAST_CONNECT]))
     cg.add(
         var.set_rail_range(
             config[CONF_WINDOW_MIN], config[CONF_WINDOW_MAX], config[CONF_INVERT]

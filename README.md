@@ -152,6 +152,7 @@ cover:
 | `connect_timeout` | no | `20s` | |
 | `handshake_timeout` | no | `15s` | Keying and the first status frame. Generous on purpose: six motors, Wi-Fi and logging share one radio, and a connection that is merely slow is not a failure. |
 | `operation_timeout` | no | `120s` | Total budget for one request, across every retry. |
+| `fast_connect` | no | `false` | Send waiting work as soon as the motor is keyed, instead of asking where the rail is first. Saves a round trip on every command; see *Making it fast*. |
 | `discovery_rounds` | no | `3` | Bounded listening rounds before giving up, with a growing pause between them. One window is fragile for a motor that advertises weakly; this is not an unbounded retry. |
 | `stuck_connect_timeout` | no | `60s` | See *Known limitations*. |
 | `recover_by_reboot` | no | `false` | Reboot the node if a connection attempt is unrecoverably stuck. |
@@ -405,7 +406,26 @@ runtime.
 `disconnect`. `status_query` connects and refreshes position, battery, speed
 and calibration.
 
-## The scan window collapses while a motor is connected
+## Making it fast
+
+A blind that takes half a minute to respond is technically working and
+practically useless. Most of that time is not the rail moving — it is the radio
+finding the motor and getting a link up. What follows is what actually helps,
+in the order worth trying, and one measurement that tells you whether it did.
+
+Start by turning on the phase log. Every connection ends with a line like:
+
+```
+[tv_bottom] Ready 9.0s after being wanted: heard 0.6s, link 5.4s, services 0.3s,
+notifications 0.4s, key 2.3s
+```
+
+Each phase has a different remedy, which is the whole point of splitting them:
+*heard* is the scanner's duty cycle, *link* is the controller reaching the
+motor, *services* is GATT discovery and its cache, and *notifications* and *key*
+are the motor answering. Fix the phase you actually have.
+
+### The scan window collapses while a motor is connected
 
 The single largest cost in a group operation is not travel, it is waiting to
 hear a motor advertise. On ESPHome 2026.8 and later that wait is roughly ten
@@ -440,6 +460,67 @@ discovery stops improving.
 
 On ESPHome before 2026.8 this option does not exist and the window is 30 ms at
 all times, connected or not.
+
+### A finished motor should let go of the radio
+
+`disconnect_delay` defaults to 15 seconds. On a node with one blind that costs
+nothing. On a node with three, a motor that finished its move keeps its link
+alive for fifteen seconds while the scanner — now at the reduced window above —
+is trying to hear the next one.
+
+```yaml
+motionblinds_ble:
+  - id: tv_bottom
+    disconnect_delay: 3s
+```
+
+What it costs: a genuine follow-up command that arrives inside the old window
+now pays for a fresh connection instead of reusing the open one. If you
+routinely nudge the same blind a few times in a row, keep it higher.
+
+### Skip the status query when there is already work to do
+
+Normally a motor is not considered ready until it has been keyed *and* has
+answered a status query. Only then is the queued command sent. That is one full
+round trip to the motor before anything moves, and on a weak link it is where a
+lost write costs a three-second retry.
+
+`fast_connect: true` sends the waiting command as soon as the motor is keyed:
+
+```yaml
+motionblinds_ble:
+  - id: tv_bottom
+    fast_connect: true
+```
+
+Nothing is reported as done that was not: the command still has to be confirmed
+by the motor before it counts, so a blind that did not move is still a failure.
+What is given up is finding out *early* that the key never landed. That case
+then surfaces as a travel timeout rather than a handshake timeout — several
+seconds later, and named less precisely.
+
+Two things it deliberately does not do. A position command is held back when no
+position is remembered at all, because the travel budget is derived from the
+distance to cover and a budget measured from a position that was never observed
+can cut a legitimate move short. And it changes nothing when the motor has no
+work waiting, such as a refresh button press.
+
+It pairs naturally with `optimistic: true` on the blind — both are the same
+trade, made at different levels: act on what is remembered rather than pay to
+re-establish it first.
+
+### What does not help
+
+Raising `disconnect_delay` so links stay warm, keeping connections open
+permanently, and tuning the MTU have all been considered and rejected; the
+reasoning is in the field notes. Lowering the minimum gap between commands is
+actively harmful — it is the guard against the fault where a second command
+sent too soon is accepted and silently ignored.
+
+The honest ceiling: connections on one ESP32 are established one at a time, and
+that is the tracker's design, not a bug. Three blinds moving from cold will not
+beat roughly the sum of three connection paths. If that is not fast enough, the
+answer is a second node, not a setting.
 
 ## Splitting motors across two nodes
 

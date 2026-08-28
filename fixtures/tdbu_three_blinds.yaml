@@ -24,12 +24,12 @@ esp32_ble_tracker:
     continuous: true
     connection_scan_window: 160ms
 motionblinds_ble:
-  - {id: a_top, mac_code: "0A5A", time_id: local_time}
-  - {id: a_bot, mac_code: "EBAA", time_id: local_time}
-  - {id: b_top, mac_code: "214E", time_id: local_time}
-  - {id: b_bot, mac_code: "19CE", time_id: local_time}
-  - {id: c_top, mac_code: "F095", time_id: local_time}
-  - {id: c_bot, mac_code: "F5B7", time_id: local_time}
+  - {id: a_top, mac_code: "0A5A", time_id: local_time, fast_connect: true, disconnect_delay: 3s}
+  - {id: a_bot, mac_code: "EBAA", time_id: local_time, fast_connect: true, disconnect_delay: 3s}
+  - {id: b_top, mac_code: "214E", time_id: local_time, fast_connect: true, disconnect_delay: 3s}
+  - {id: b_bot, mac_code: "19CE", time_id: local_time, fast_connect: true, disconnect_delay: 3s}
+  - {id: c_top, mac_code: "F095", time_id: local_time, fast_connect: true, disconnect_delay: 3s}
+  - {id: c_bot, mac_code: "F5B7", time_id: local_time, fast_connect: true, disconnect_delay: 3s}
 motionblinds_ble_tdbu:
   - {id: a, top_motor: a_top, bottom_motor: a_bot, diagnostics: {name: "Blind A"}}
   - {id: b, top_motor: b_top, bottom_motor: b_bot, diagnostics: {name: "Blind B"}}

@@ -116,10 +116,12 @@ void MotionblindsBLEMotor::dump_config() {
                 "  Inverted: %s\n"
                 "  Disconnect delay: %us\n"
                 "  Discovery timeout: %us\n"
+                "  Fast connect: %s\n"
                 "  Recover by reboot: %s",
                 this->range_.window_min, this->range_.window_max, YESNO(this->range_.invert),
                 static_cast<unsigned>(this->disconnect_delay_ / 1000),
-                static_cast<unsigned>(this->discovery_timeout_ / 1000), YESNO(this->recover_by_reboot_));
+                static_cast<unsigned>(this->discovery_timeout_ / 1000), YESNO(this->fast_connect_),
+                YESNO(this->recover_by_reboot_));
   if (this->time_ == nullptr)
     ESP_LOGE(TAG, "  No time source: commands cannot be encrypted");
 }
@@ -487,6 +489,32 @@ void MotionblindsBLEMotor::reconcile_state_() {
   }
 }
 
+void MotionblindsBLEMotor::log_connect_phases_() {
+  if (this->phase_work_at_ == 0)
+    return;  // already connected when the work arrived; nothing was paid
+
+  const uint32_t now = millis();
+  const auto secs = [](uint32_t from, uint32_t to) { return static_cast<double>(to - from) / 1000.0; };
+
+  if (this->phase_heard_at_ == 0 || this->phase_open_at_ == 0 || this->phase_services_at_ == 0 ||
+      this->phase_notify_at_ == 0) {
+    ESP_LOGI(TAG, "[%s] Ready %.1fs after being wanted", this->label_, secs(this->phase_work_at_, now));
+    this->phase_work_at_ = 0;
+    return;
+  }
+
+  // Named separately because they have different remedies: being heard is the
+  // scanner's duty cycle, the link is the controller's initiator, services are
+  // the GATT cache, and the last two are the motor answering.
+  ESP_LOGI(TAG,
+           "[%s] Ready %.1fs after being wanted: heard %.1fs, link %.1fs, services %.1fs, notifications %.1fs, "
+           "key %.1fs",
+           this->label_, secs(this->phase_work_at_, now), secs(this->phase_work_at_, this->phase_heard_at_),
+           secs(this->phase_heard_at_, this->phase_open_at_), secs(this->phase_open_at_, this->phase_services_at_),
+           secs(this->phase_services_at_, this->phase_notify_at_), secs(this->phase_notify_at_, now));
+  this->phase_work_at_ = 0;
+}
+
 void MotionblindsBLEMotor::drive_handshake_() {
   const uint32_t now = millis();
 
@@ -496,6 +524,27 @@ void MotionblindsBLEMotor::drive_handshake_() {
                                : SETTLE_DELAY_MS;
     if (now - this->settle_since_ < delay)
       return;
+
+    // With fast_connect, a motor that already has work waiting does not pay for
+    // a status round trip before it can be given that work. The command's own
+    // verification still has to prove the motor acted, so nothing is reported
+    // as done that was not; what is given up is learning early that the key
+    // never landed. That failure then surfaces as a travel timeout instead of a
+    // handshake one — later, and with a less precise name.
+    //
+    // A position command is held back when no position is remembered: its
+    // travel budget is derived from the distance to cover, and a budget
+    // measured from a position that was never observed can cut a legitimate
+    // move short.
+    if (this->fast_connect_ && !this->queue_.empty() &&
+        (this->queue_.front().command != Command::PERCENT || this->has_position_)) {
+      this->handshake_ = Handshake::DONE;
+      this->set_state_(MotorState::READY);
+      this->attempts_ = 0;
+      this->log_connect_phases_();
+      ESP_LOGI(TAG, "[%s] Keyed with work waiting, skipping the status query", this->label_);
+      return;
+    }
 
     if (!this->write_command_(Command::STATUS_QUERY, 0)) {
       this->fail_("could not request status");
@@ -664,7 +713,15 @@ bool MotionblindsBLEMotor::write_command_(Command command, uint8_t argument) {
 void MotionblindsBLEMotor::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                                                esp_ble_gattc_cb_param_t *param) {
   switch (event) {
+    case ESP_GATTC_OPEN_EVT:
+      // The link itself is up. Everything before this is the radio finding and
+      // reaching the motor; everything after is GATT.
+      if (param->open.status == ESP_GATT_OK)
+        this->phase_open_at_ = millis();
+      break;
+
     case ESP_GATTC_SEARCH_CMPL_EVT: {
+      this->phase_services_at_ = millis();
       // Handles must be re-read on every connection; they are not guaranteed
       // to survive a reconnect, and the service objects are freed shortly.
       auto *command = this->ble_client_->get_characteristic(espbt::ESPBTUUID::from_raw(SERVICE_UUID),
@@ -722,6 +779,7 @@ void MotionblindsBLEMotor::gattc_event_handler(esp_gattc_cb_event_t event, esp_g
       }
       this->handshake_ = Handshake::WAIT_BLIND_SETTLE;
       this->settle_since_ = millis();
+      this->phase_notify_at_ = this->settle_since_;
       this->handshake_attempts_ = 0;
       break;
     }
@@ -803,6 +861,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
     this->handshake_ = Handshake::DONE;
     this->set_state_(MotorState::READY);
     this->attempts_ = 0;
+    this->log_connect_phases_();
     ESP_LOGI(TAG, "[%s] Ready, position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
              static_cast<unsigned>(this->battery_percentage_));
   }
@@ -841,6 +900,15 @@ void MotionblindsBLEMotor::set_state_(MotorState state) {
     return;
   this->state_ = state;
   this->state_since_ = millis();
+  if (state == MotorState::DISCOVERING) {
+    this->phase_work_at_ = this->state_since_;
+    this->phase_heard_at_ = 0;
+    this->phase_open_at_ = 0;
+    this->phase_services_at_ = 0;
+    this->phase_notify_at_ = 0;
+  } else if (state == MotorState::CONNECTING) {
+    this->phase_heard_at_ = this->state_since_;
+  }
   if (state != MotorState::CONNECTING)
     this->stuck_reported_ = false;
   if (state == MotorState::IDLE || state == MotorState::FAILED)

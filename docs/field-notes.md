@@ -96,6 +96,24 @@ operation deadlines expire. The effective lever is `optimistic`, which wakes
 only the rails that actually move and so halves the radio load for the same
 work.
 
+### The status query before the first command costs a round trip
+
+A motor is keyed, then asked where it is, and only once it answers is the queued
+command sent. On a healthy link that is a few hundred milliseconds. On a link
+where the query write is lost — which does happen, see above — it is a three
+second retry, sometimes twice.
+
+`fast_connect` sends the waiting command straight after keying instead. The
+guarantee that matters survives: the command is still only reported as done once
+the motor confirms it. What is lost is the early proof that the key landed, so a
+motor that was never keyed fails at its travel deadline instead of its handshake
+deadline — later, and named less usefully.
+
+Not made the default. A user who never sets it keeps the more precise failure
+reporting, and a first move on a motor with no remembered position still takes
+the slow path regardless, because the travel budget depends on knowing where the
+rail started.
+
 ### Rails move slowly, so travel budgets must be generous
 
 A rail took four seconds to move a few percent. Budgets of seven and eight
@@ -262,21 +280,42 @@ One run each, on one installation, 2026-08-28. Indicative, not a benchmark.
 | of which connecting | 22.5 s, two motors | 10.8 s, one motor |
 | of which moving | 4.4 s | 4.3 s |
 
-The connection is the whole overhead. Nothing but keeping links open shortens
-it further.
+The connection is the whole overhead. Two things do shorten it without keeping
+links open: raising `connection_scan_window`, and `fast_connect`.
+
+Phase breakdown from the connection-status history of a real boot, six motors
+across two nodes:
+
+| | heard after | then ready after |
+| --- | --- | --- |
+| tv bottom, nothing else connected | 0.6 s | 9.0 s |
+| tv bottom, second attempt | 5.4 s | 2.8 s |
+| tv top, partner connected throughout | 26.2 s | 5.2 s |
+| bank bottom, nothing else connected | 0.5 s | 8.9 s |
+| bank bottom, second attempt | 18.8 s | 4.8 s |
+
+Two separate problems, and they need separate fixes. Being *heard* varies from
+half a second to twenty-six, and tracks whether another motor is connected —
+that is the scan window. Getting from heard to ready is a fairly steady three to
+nine seconds even with an idle radio, and that is the link, GATT and the motor's
+own response time. The per-phase log line exists so the next measurement does
+not have to be inferred from state history like this one was.
 
 Signal strengths ranged from -63 to -91 dBm for the same motor within an hour,
-so a single RSSI reading says little.
+so a single RSSI reading says little. Moving a node physically closer to the
+weakest motor did not improve its reading: -91 and -86 dBm on a board sitting
+beside the blind, against -87 dBm from a node across the room. A worse antenna
+gives back what proximity wins.
 
 ---
 
 ## Ideas assessed and not taken
 
-**Raising the scanner duty cycle.** Worth checking on your own version before
-acting on advice about it: ESPHome's default `window` was 30 ms against a 320 ms
-interval — 9.4% — in 2026.6, but is 320 ms against 320 ms in 2026.8, which is
-already continuous. There is nothing to win on a version where it is the
-latter.
+**Raising the *idle* scanner duty cycle.** Nothing to win on 2026.8: the window
+is already raised to the interval. The version matters, though — it was 30 ms
+against 320 ms in 2026.6, so advice about this is only as good as the version it
+was written against. The duty cycle *during connections* is a different setting
+and is very much worth raising; see above.
 
 **Direct connect with a cached address and type.** Tempting, since waiting for
 an advertisement is the slow part. It does not help: `esp_ble_gattc_open()`

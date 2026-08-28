@@ -94,6 +94,10 @@ class MotionblindsBLEMotor : public Component {
     this->recover_by_reboot_ = enabled;
     this->recover_after_ = after_ms;
   }
+  /// Send waiting work as soon as the motor is keyed, instead of first asking
+  /// where the rail is. Trades a status round trip for a later, slower failure
+  /// when the key never arrived; see the README.
+  void set_fast_connect(bool enabled) { this->fast_connect_ = enabled; }
 
   // ------------------------------------------------------------- commands
   /// Drive the rail to a window position. Returns false when the request was
@@ -191,6 +195,9 @@ class MotionblindsBLEMotor : public Component {
   void abort_();
   void reconcile_state_();
   void drive_handshake_();
+  /// One line naming where the seconds between wanting a motor and being able
+  /// to command it actually went.
+  void log_connect_phases_();
   void dispatch_();
   bool write_command_(Command command, uint8_t argument);
   void handle_notification_(const uint8_t *data, uint16_t length);
@@ -215,6 +222,7 @@ class MotionblindsBLEMotor : public Component {
   uint32_t recover_after_{300000};
   uint8_t discovery_rounds_{3};
   bool recover_by_reboot_{false};
+  bool fast_connect_{false};
   const char *label_{""};
 
   MotorState state_{MotorState::IDLE};
@@ -236,6 +244,14 @@ class MotionblindsBLEMotor : public Component {
   uint32_t discovery_scanning_ms_{0};
   uint32_t discovery_last_tick_{0};
   uint32_t backoff_until_{0};
+
+  /// Stamps for the connect phase breakdown, so a slow connection can be
+  /// blamed on the right step instead of guessed at. Zero means not reached.
+  uint32_t phase_work_at_{0};
+  uint32_t phase_heard_at_{0};
+  uint32_t phase_open_at_{0};
+  uint32_t phase_services_at_{0};
+  uint32_t phase_notify_at_{0};
 
   uint16_t command_handle_{0};
   uint16_t notify_handle_{0};
