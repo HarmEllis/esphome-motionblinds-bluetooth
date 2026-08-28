@@ -251,6 +251,12 @@ Because of this the component auto-loads `sensor`, `binary_sensor`,
 `text_sensor` and `button`, which costs a little flash even if you never use
 `diagnostics:`.
 
+The component also turns on ESP-IDF's `CONFIG_BT_GATTC_CACHE_NVS_FLASH`, so a
+motor's discovered attribute table is kept in flash. Without it every
+connection re-walks the whole table before a command can be sent, and on
+battery devices with a slow connection interval that walk is a large part of
+the delay between pressing a button and the blind moving.
+
 ### What a position means
 
 `0%` is closed and `100%` is open, as Home Assistant labels every cover. For a

@@ -4,6 +4,7 @@ from esphome.components import (
     esp32_ble_client,
     esp32_ble_tracker,
 )
+from esphome.components.esp32 import add_idf_sdkconfig_option
 from esphome.components import time as time_
 from esphome.components.esp32_ble import BTLoggers
 import esphome.config_validation as cv
@@ -226,6 +227,13 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 
 async def to_code(config):
     esp32_ble.register_bt_logger(BTLoggers.GATT)
+
+    # Keep the discovered GATT database in flash, the way bluetooth_proxy does.
+    # Every connection otherwise re-walks the motor's whole attribute table
+    # before a single command can be sent, and these are battery devices on a
+    # slow connection interval — that walk is a large part of the delay between
+    # pressing a button and the blind moving.
+    add_idf_sdkconfig_option("CONFIG_BT_GATTC_CACHE_NVS_FLASH", True)
 
     # The BLE client is created here, the way bluetooth_proxy creates its own
     # connections, so that the user only ever describes motors.

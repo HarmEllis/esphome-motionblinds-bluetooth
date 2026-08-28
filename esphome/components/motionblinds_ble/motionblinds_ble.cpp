@@ -327,7 +327,26 @@ void MotionblindsBLEMotor::loop() {
 
     case MotorState::HANDSHAKE:
       if (now - this->state_since_ > this->handshake_timeout_) {
-        this->fail_("handshake timed out");
+        // Name the step. "Handshake timed out" cannot distinguish a motor that
+        // refused to enable notifications from one that was keyed and then
+        // never answered the status query, and those have different causes.
+        switch (this->handshake_) {
+          case Handshake::WAIT_NOTIFY_REGISTRATION:
+            this->fail_("motor never confirmed the notification registration");
+            break;
+          case Handshake::WAIT_DESCRIPTOR_WRITE:
+            this->fail_("motor never enabled its notifications");
+            break;
+          case Handshake::WAIT_BLIND_SETTLE:
+            this->fail_("motor did not settle after being keyed");
+            break;
+          case Handshake::WAIT_STATUS:
+            this->fail_("motor was keyed but never sent its status");
+            break;
+          default:
+            this->fail_("handshake timed out");
+            break;
+        }
       } else {
         this->drive_handshake_();
       }
