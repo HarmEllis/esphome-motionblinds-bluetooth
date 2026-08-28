@@ -548,8 +548,12 @@ void MotionblindsBLEMotor::dispatch_() {
   if (this->queue_.empty())
     return;
 
-  // Give the motor room between commands; see MIN_COMMAND_GAP_MS.
-  if (this->last_command_finished_ != 0 && now - this->last_command_finished_ < MIN_COMMAND_GAP_MS)
+  // Give the motor room between commands; see MIN_COMMAND_GAP_MS. Never for a
+  // stop: it is the brake the clearance watchdog reaches for, and a brake that
+  // waits its turn is not a brake. It bypasses this path entirely while the
+  // link is up, but it can still arrive here when one has to be made first.
+  if (this->queue_.front().command != Command::STOP && this->last_command_finished_ != 0 &&
+      now - this->last_command_finished_ < MIN_COMMAND_GAP_MS)
     return;
 
   const PendingCommand command = this->queue_.front();
