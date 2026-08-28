@@ -60,6 +60,11 @@ static const uint8_t SETTLE_FRAMES = 2;
 /// what makes the next motor slow to find.
 static const uint32_t STATUS_REFRESH_MS = 3600000;
 
+/// How often the "where are you really" question is asked before a move is
+/// declared failed. More than once because the question is written without a
+/// response, and those writes do get lost.
+static const uint8_t MAX_SETTLE_RECHECKS = 3;
+
 static const uint32_t HANDSHAKE_RETRY_MS = 3000;
 static const uint8_t MAX_HANDSHAKE_ATTEMPTS = 3;
 
@@ -630,7 +635,7 @@ void MotionblindsBLEMotor::dispatch_() {
       case Verification::SETTLED:
         if (now - this->command_sent_at_ <= this->command_budget_)
           break;
-        if (this->settle_rechecked_) {
+        if (this->settle_recheck_attempts_ >= MAX_SETTLE_RECHECKS) {
           this->fail_("motor never reached the commanded position");
           break;
         }
@@ -638,8 +643,16 @@ void MotionblindsBLEMotor::dispatch_() {
         // there. These motors report when something changes, so a move that
         // finished quietly, or one whose remembered start position was wrong,
         // looks identical to one that never happened. Ask before condemning it.
-        ESP_LOGI(TAG, "[%s] No arrival reported after %us, asking where it is", this->label_,
-                 static_cast<unsigned>(this->command_budget_ / 1000));
+        //
+        // Asked more than once, because the question is written without a
+        // response and a lost write is silent -- the same reason the handshake
+        // repeats its status query. A single unanswered attempt was condemning
+        // rails that were sitting exactly where they had been told to go.
+        ESP_LOGI(TAG, "[%s] No arrival reported after %us, asking where it is (attempt %u of %u)", this->label_,
+                 static_cast<unsigned>(this->command_budget_ / 1000),
+                 static_cast<unsigned>(this->settle_recheck_attempts_ + 1),
+                 static_cast<unsigned>(MAX_SETTLE_RECHECKS));
+        this->settle_recheck_attempts_++;
         this->settle_rechecked_ = true;
         this->command_sent_at_ = now;
         this->command_budget_ = COMMAND_ACK_TIMEOUT_MS;
@@ -676,6 +689,7 @@ void MotionblindsBLEMotor::dispatch_() {
   this->command_sent_at_ = now;
   this->settle_matches_ = 0;
   this->settle_rechecked_ = false;
+  this->settle_recheck_attempts_ = 0;
   this->last_activity_ = now;
 
   // A rail already standing on the requested position has nothing to report,

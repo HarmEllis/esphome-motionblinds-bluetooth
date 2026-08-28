@@ -234,6 +234,7 @@ class MotionblindsBLEMotor : public Component {
   /// since. Both are reported by dump_config, because the alternative -- a log
   /// line during setup() -- is emitted before the API is up and can therefore
   /// never be read from Home Assistant or the ESPHome dashboard.
+  uint8_t settle_recheck_attempts_{0};
   bool restored_{false};
   bool save_failed_{false};
   const char *label_{""};

@@ -137,6 +137,12 @@ after a recheck there is nothing to pass through, because the rail has stood
 still for the whole budget and the frame is the answer to a question that was
 asked deliberately. The recheck's answer is now accepted on its own.
 
+That was not enough on its own, and the reason is a third note from this same
+page: the recheck's question is written without a response, and those writes get
+lost. One unanswered attempt was condemning a rail that was sitting exactly
+where it had been told to go. The question is now asked up to three times, the
+way the handshake already asks its own status query more than once.
+
 This only bites when the rail's position was not already known -- otherwise the
 command is recognised as a no-op before it is sent. It therefore showed up only
 once positions stopped surviving a restart, which is how two unrelated faults
