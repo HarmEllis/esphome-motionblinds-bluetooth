@@ -129,15 +129,22 @@ void MotionblindsBLEMotor::dump_config() {
                 static_cast<unsigned>(this->disconnect_delay_ / 1000),
                 static_cast<unsigned>(this->discovery_timeout_ / 1000), YESNO(this->fast_connect_),
                 YESNO(this->recover_by_reboot_));
-  if (this->restored_) {
-    ESP_LOGCONFIG(TAG, "  Stored state: position %u, battery %u%%", static_cast<unsigned>(this->raw_position_),
-                  static_cast<unsigned>(this->battery_percentage_));
+  // Reported here rather than from setup(), which runs before the API is up
+  // and can therefore be read from neither Home Assistant nor the ESPHome
+  // dashboard. At INFO rather than CONFIG for the same kind of reason: config
+  // lines are compiled out at INFO, which is where people actually run.
+  //
+  // Three outcomes, not two. "No blob" and "a blob that says nothing is known"
+  // are different faults with different causes, and telling them apart from the
+  // outside was impossible while both were silent.
+  if (!this->restored_) {
+    ESP_LOGW(TAG, "[%s] Flash store held nothing; this rail does not know where it is", this->label_);
+  } else if (!this->has_position_) {
+    ESP_LOGW(TAG, "[%s] Flash store was read but holds no position; this rail does not know where it is",
+             this->label_);
   } else {
-    // A warning rather than a config line on purpose: config lines are compiled
-    // out at log level INFO, and this is precisely the condition someone
-    // running at INFO needs to see. A blind that does not know where its rail
-    // is cannot be moved safely until it has been asked.
-    ESP_LOGW(TAG, "[%s] Nothing restored from flash; this rail does not know where it is", this->label_);
+    ESP_LOGI(TAG, "[%s] Restored position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
+             static_cast<unsigned>(this->battery_percentage_));
   }
   if (this->time_ == nullptr)
     ESP_LOGE(TAG, "  No time source: commands cannot be encrypted");
@@ -1051,6 +1058,17 @@ void MotionblindsBLEMotor::save_position_() {
     return;
   }
   this->save_failed_ = false;
+
+  // Saves are rare now -- a completed move, and dropping the link -- so saying
+  // what went in costs nothing and closes the loop with the line above. A save
+  // that carries no position is worth a warning: it is how a working store ends
+  // up holding a rail that does not know where it is.
+  if (this->has_position_) {
+    ESP_LOGI(TAG, "[%s] Saved position %u, battery %u%%", this->label_, static_cast<unsigned>(this->raw_position_),
+             static_cast<unsigned>(this->battery_percentage_));
+  } else {
+    ESP_LOGW(TAG, "[%s] Saved without a position; a restart will not know where this rail is", this->label_);
+  }
 }
 
 void MotionblindsBLEMotor::publish_() { this->update_callback_.call(); }
