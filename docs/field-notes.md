@@ -121,6 +121,27 @@ precisely the fault this component was built to escape. The query is now sent
 after the work instead of before it, and only when those values are over an hour
 old, so it uses idle time rather than adding to the wait.
 
+### A rail already at its target used to fail every time
+
+Two field notes combine into a bug. A motor at its target says nothing, and
+arrival is normally only accepted after two frames agree. So a command to a
+position the rail is already standing on gets no frames at all, runs out its
+travel budget, and reaches the recheck -- which asks the motor where it is,
+receives one status frame saying exactly the commanded position, and rejects it
+for being a single frame. Five seconds later the command is condemned with
+"motor never reached the commanded position".
+
+Observed twice within a minute on a rail that was already up. The two-frame rule
+exists so a position the rail is passing through cannot be mistaken for arrival;
+after a recheck there is nothing to pass through, because the rail has stood
+still for the whole budget and the frame is the answer to a question that was
+asked deliberately. The recheck's answer is now accepted on its own.
+
+This only bites when the rail's position was not already known -- otherwise the
+command is recognised as a no-op before it is sent. It therefore showed up only
+once positions stopped surviving a restart, which is how two unrelated faults
+came to look like one.
+
 ### Rails move slowly, so travel budgets must be generous
 
 A rail took four seconds to move a few percent. Budgets of seven and eight

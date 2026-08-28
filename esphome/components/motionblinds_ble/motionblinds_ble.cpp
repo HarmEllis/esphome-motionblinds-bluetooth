@@ -673,7 +673,9 @@ void MotionblindsBLEMotor::dispatch_() {
   // Fixed here, not recomputed each loop: a budget derived from the live
   // position shrinks as the rail approaches, and would cut a long move short
   // long before its real allowance ran out.
-  this->command_budget_ = command.verification == Verification::SETTLED
+  // From the verification actually in force, which the branch above may just
+  // have downgraded -- not from the one the command was queued with.
+  this->command_budget_ = this->in_flight_.verification == Verification::SETTLED
                               ? TRAVEL_TIMEOUT_BASE_MS + distance * TRAVEL_TIMEOUT_PER_PERCENT_MS
                               : COMMAND_ACK_TIMEOUT_MS;
 
@@ -897,7 +899,15 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
       this->finish_operation_();
     } else if (this->in_flight_.verification == Verification::SETTLED) {
       if (this->raw_position_ == this->in_flight_.target) {
-        if (++this->settle_matches_ >= SETTLE_FRAMES || notification.type == NotificationType::FEEDBACK) {
+        // Two frames are normally required so a position the rail is merely
+        // passing through cannot be mistaken for arrival. After the recheck
+        // below that reasoning does not apply: the rail has stood still for the
+        // whole travel budget, and this frame is the answer to a question that
+        // was asked explicitly. Refusing it made a rail that was already at its
+        // commanded position fail every single time -- the recheck asked where
+        // the motor was, was told, and condemned it anyway.
+        if (++this->settle_matches_ >= SETTLE_FRAMES || notification.type == NotificationType::FEEDBACK ||
+            this->settle_rechecked_) {
           ESP_LOGI(TAG, "[%s] Reached %u", this->label_, static_cast<unsigned>(this->raw_position_));
           this->command_in_flight_ = false;
           this->moving_ = false;
