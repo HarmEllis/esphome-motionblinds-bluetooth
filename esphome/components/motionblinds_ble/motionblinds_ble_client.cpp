@@ -13,6 +13,22 @@ namespace esphome::motionblinds_ble {
 
 static const char *const TAG = "motionblinds_ble.client";
 
+// The same balanced interval ESPHome uses for its cached V3 clients. The
+// legacy client path this component needs otherwise leaves the ESP-IDF default
+// (12.5-15ms) in place. Setting the preference before opening the link removes
+// idle air time from service discovery and the notification/key handshake
+// without adding another connection-parameter round trip.
+static constexpr uint16_t LOW_LATENCY_MIN_INTERVAL = 0x07;  // 8.75ms
+static constexpr uint16_t LOW_LATENCY_MAX_INTERVAL = 0x09;  // 11.25ms
+static constexpr uint16_t LOW_LATENCY_TIMEOUT = 800;        // 8s
+
+void MotionblindsBLEClient::connect() {
+  if (this->low_latency_connection_)
+    this->set_conn_params_(LOW_LATENCY_MIN_INTERVAL, LOW_LATENCY_MAX_INTERVAL, 0, LOW_LATENCY_TIMEOUT,
+                           "motionblinds low-latency");
+  BLEClientBase::connect();
+}
+
 bool MotionblindsBLEClient::parse_device(const espbt::ESPBTDevice &device) {
   if (!this->enabled_)
     return false;

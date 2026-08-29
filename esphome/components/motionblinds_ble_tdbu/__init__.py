@@ -36,6 +36,9 @@ MotionblindsBLETdbuDiagnostics = motionblinds_ble_tdbu_ns.class_(
 MotionblindsBLETdbuRefreshButton = motionblinds_ble_tdbu_ns.class_(
     "MotionblindsBLETdbuRefreshButton", button.Button, cg.Component
 )
+MotionblindsBLETdbuPrepareButton = motionblinds_ble_tdbu_ns.class_(
+    "MotionblindsBLETdbuPrepareButton", button.Button, cg.Component
+)
 
 Fabric = motionblinds_ble_tdbu_ns.enum("Fabric", is_class=True)
 FABRICS = {
@@ -59,6 +62,7 @@ CONF_SIGNAL_STRENGTH = "signal_strength"
 CONF_CONNECTION_STATUS = "connection_status"
 CONF_POSITION_FRESH = "position_fresh"
 CONF_REFRESH = "refresh"
+CONF_PREPARE = "prepare"
 CONF_STATUS = "status"
 CONF_TOP_MOTOR = "top_motor"
 CONF_BOTTOM_MOTOR = "bottom_motor"
@@ -67,6 +71,8 @@ CONF_MIN_GAP = "min_gap"
 CONF_SAFETY_MARGIN = "safety_margin"
 CONF_START_GAP = "start_gap"
 CONF_OPTIMISTIC = "optimistic"
+CONF_PRECONNECT_TRAILING = "preconnect_trailing"
+CONF_PREPARE_TIMEOUT = "prepare_timeout"
 CONF_CLEARANCE_TIMEOUT = "clearance_timeout"
 CONF_LEASE_TIMEOUT = "lease_timeout"
 
@@ -82,6 +88,7 @@ def _diagnostics_schema():
         cv.Required(CONF_NAME): cv.string,
         # Says what the blind is doing, or why the last move did not happen.
         cv.GenerateID(CONF_STATUS): cv.declare_id(text_sensor.TextSensor),
+        cv.GenerateID(CONF_PREPARE): cv.declare_id(MotionblindsBLETdbuPrepareButton),
     }
     for rail in _RAILS:
         schema[cv.GenerateID(f"{rail}_{CONF_BATTERY_LEVEL}")] = cv.declare_id(sensor.Sensor)
@@ -132,6 +139,10 @@ CONFIG_SCHEMA = cv.All(
             # before every move. Much faster, and wrong if anything else moves
             # the blind. See the README.
             cv.Optional(CONF_OPTIMISTIC, default=False): cv.boolean,
+            cv.Optional(CONF_PRECONNECT_TRAILING, default=True): cv.boolean,
+            cv.Optional(
+                CONF_PREPARE_TIMEOUT, default="120s"
+            ): cv.positive_time_period_milliseconds,
             cv.Optional(
                 CONF_CLEARANCE_TIMEOUT, default="60s"
             ): cv.positive_time_period_milliseconds,
@@ -158,6 +169,8 @@ async def to_code(config):
     cg.add(var.set_safety_margin(config[CONF_SAFETY_MARGIN] * 100.0))
     cg.add(var.set_start_gap(config[CONF_START_GAP] * 100.0))
     cg.add(var.set_optimistic(config[CONF_OPTIMISTIC]))
+    cg.add(var.set_preconnect_trailing(config[CONF_PRECONNECT_TRAILING]))
+    cg.add(var.set_prepare_timeout(config[CONF_PREPARE_TIMEOUT]))
     cg.add(var.set_clearance_timeout(config[CONF_CLEARANCE_TIMEOUT]))
     cg.add(var.set_lease_timeout(config[CONF_LEASE_TIMEOUT]))
 
@@ -178,6 +191,13 @@ async def _diagnostics_to_code(parent, config):
         | {CONF_ID: config[CONF_STATUS]}
     )
     cg.add(diagnostics.set_status(status))
+
+    prepare_config = button.button_schema(
+        MotionblindsBLETdbuPrepareButton, entity_category=ENTITY_CATEGORY_CONFIG
+    )({CONF_NAME: f"{prefix} prepare"}) | {CONF_ID: config[CONF_PREPARE]}
+    prepare = await button.new_button(prepare_config)
+    await cg.register_component(prepare, prepare_config)
+    cg.add(prepare.set_tdbu(parent))
 
     for rail in _RAILS:
         rail_enum = RAILS[rail.upper()]

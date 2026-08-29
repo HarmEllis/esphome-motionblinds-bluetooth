@@ -55,6 +55,10 @@ motionblinds_ble_tdbu:
     bottom_motor: living_bottom
     fabric: between_rails
     optimistic: true      # see "Making it fast"
+    # Connect the second rail while the first is opening a safe gap. This does
+    # not send its movement command early.
+    preconnect_trailing: true
+    prepare_timeout: 120s
     diagnostics:
       name: "Living blind"
 

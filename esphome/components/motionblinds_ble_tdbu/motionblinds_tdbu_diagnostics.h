@@ -101,6 +101,18 @@ class MotionblindsBLETdbuRefreshButton : public button::Button, public Component
   MotionblindsBLETdbu *tdbu_{nullptr};
   Rail rail_{Rail::TOP};
 };
+
+/// Opens and keys both motor links ahead of a time-critical movement.
+class MotionblindsBLETdbuPrepareButton : public button::Button, public Component {
+ public:
+  void dump_config() override;
+  float get_setup_priority() const override { return setup_priority::DATA; }
+  void set_tdbu(MotionblindsBLETdbu *tdbu) { this->tdbu_ = tdbu; }
+
+ protected:
+  void press_action() override;
+  MotionblindsBLETdbu *tdbu_{nullptr};
+};
 #endif
 
 }  // namespace esphome::motionblinds_ble_tdbu

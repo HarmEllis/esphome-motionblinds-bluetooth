@@ -29,6 +29,13 @@ void MotionblindsBLETdbu::setup() {
 const char *MotionblindsBLETdbu::status_text() const {
   if (this->last_error_ != nullptr && this->phase_ == Phase::IDLE)
     return this->last_error_;
+  if (this->prepared_ && this->phase_ == Phase::IDLE) {
+    if (this->fresh_(Rail::TOP) && this->fresh_(Rail::BOTTOM) &&
+        this->top_->state() == esphome::motionblinds_ble::MotorState::READY &&
+        this->bottom_->state() == esphome::motionblinds_ble::MotorState::READY)
+      return "ready for immediate command";
+    return "preparing both rails";
+  }
   switch (this->phase_) {
     case Phase::REFRESHING:
       return "checking where both rails are";
@@ -49,9 +56,12 @@ void MotionblindsBLETdbu::dump_config() {
                 "  Minimum gap: %.0f%%\n"
                 "  Safety margin: %.0f%%\n"
                 "  Start gap: %.0f%%\n"
+                "  Preconnect trailing rail: %s\n"
+                "  Prepare timeout: %us\n"
                 "  Reachable segment: %.0f%% - %.0f%%",
                 this->fabric_ == Fabric::BETWEEN_RAILS ? "between rails" : "outside in", this->min_gap_,
-                this->safety_margin_, this->start_gap_, this->geometry_.min_length(),
+                this->safety_margin_, this->start_gap_, YESNO(this->preconnect_trailing_),
+                static_cast<unsigned>(this->prepare_timeout_ / 1000), this->geometry_.min_length(),
                 this->geometry_.max_length());
 }
 
@@ -93,7 +103,9 @@ float MotionblindsBLETdbu::fabric_centre() const {
 }
 
 bool MotionblindsBLETdbu::is_moving() const {
-  return this->phase_ == Phase::LEADING || this->phase_ == Phase::TRAILING || this->motors_busy_();
+  return this->phase_ == Phase::LEADING || this->phase_ == Phase::TRAILING ||
+         (this->top_ != nullptr && this->top_->is_moving()) ||
+         (this->bottom_ != nullptr && this->bottom_->is_moving());
 }
 
 bool MotionblindsBLETdbu::motors_busy_() const {
@@ -173,6 +185,7 @@ void MotionblindsBLETdbu::submit_(const Intent &intent) {
 
   this->pending_ = intent;
   this->pending_.generation = ++this->generation_;
+  this->pending_.submitted_at = millis();
 
   if (this->phase_ == Phase::IDLE)
     this->begin_();
@@ -185,8 +198,14 @@ void MotionblindsBLETdbu::stop_rail(Rail rail) {
   if (motor != nullptr)
     motor->request_stop();
   this->pending_ = Intent{};
-  if (this->phase_ != Phase::IDLE)
+  if (this->phase_ != Phase::IDLE) {
     this->abandon_("stopped");
+  } else if (this->prepared_) {
+    this->prepared_ = false;
+    this->prepared_since_ = 0;
+    this->release_leases_();
+    this->update_callback_.call();
+  }
 }
 
 void MotionblindsBLETdbu::stop_all() {
@@ -195,8 +214,37 @@ void MotionblindsBLETdbu::stop_all() {
   if (this->bottom_ != nullptr)
     this->bottom_->request_stop();
   this->pending_ = Intent{};
-  if (this->phase_ != Phase::IDLE)
+  if (this->phase_ != Phase::IDLE) {
     this->abandon_("stopped");
+  } else if (this->prepared_) {
+    this->prepared_ = false;
+    this->prepared_since_ = 0;
+    this->release_leases_();
+    this->update_callback_.call();
+  }
+}
+
+void MotionblindsBLETdbu::prepare() {
+  if (this->is_failed() || this->phase_ != Phase::IDLE)
+    return;
+
+  this->last_error_ = nullptr;
+  this->prepared_ = true;
+  this->prepared_since_ = millis();
+  this->acquire_lease_(Rail::TOP);
+  this->acquire_lease_(Rail::BOTTOM);
+
+  // A lease wakes an idle motor and the normal handshake obtains a fresh
+  // position. FAILED is the one state a lease deliberately does not restart;
+  // a status request is the explicit retry in that case.
+  if (this->top_->state() == esphome::motionblinds_ble::MotorState::FAILED)
+    this->top_->request_status();
+  if (this->bottom_->state() == esphome::motionblinds_ble::MotorState::FAILED)
+    this->bottom_->request_status();
+
+  ESP_LOGI(TAG, "Preparing both rail connections for the next command (expires in %us)",
+           static_cast<unsigned>(this->prepare_timeout_ / 1000));
+  this->update_callback_.call();
 }
 
 // ------------------------------------------------------------- the moving
@@ -204,6 +252,17 @@ void MotionblindsBLETdbu::stop_all() {
 void MotionblindsBLETdbu::begin_() {
   this->operation_since_ = millis();
   this->last_error_ = nullptr;
+  this->prepared_ = false;
+  this->prepared_since_ = 0;
+
+  // A prepared or otherwise still-open pair has already supplied positions in
+  // this connection. Even conservative mode gains nothing from asking both
+  // motors the same question a second time.
+  if (this->fresh_(Rail::TOP) && this->fresh_(Rail::BOTTOM)) {
+    ESP_LOGD(TAG, "Both rail positions are already fresh; dispatching immediately");
+    this->plan_and_dispatch_();
+    return;
+  }
 
   // Optimistic: the remembered positions are taken as true, so a move can be
   // planned and sent straight away. Only a rail that has never reported at all
@@ -214,14 +273,16 @@ void MotionblindsBLETdbu::begin_() {
   }
 
   // Otherwise a remembered position is not evidence of where a rail is now: a
-  // remote or the vendor app can move one while this node is disconnected. Both
-  // motors are read before anything is planned, which means waking both and
-  // waiting for each to connect in turn.
-  ESP_LOGD(TAG, "Refreshing both rail positions before moving");
+  // remote or the vendor app can move one while this node is disconnected. A
+  // rail already observed on its current link does not need the same query
+  // twice, but both must be fresh before anything is planned.
+  ESP_LOGD(TAG, "Refreshing stale rail positions before moving");
   this->acquire_lease_(Rail::TOP);
   this->acquire_lease_(Rail::BOTTOM);
-  this->top_->request_status();
-  this->bottom_->request_status();
+  if (!this->fresh_(Rail::TOP))
+    this->top_->request_status();
+  if (!this->fresh_(Rail::BOTTOM))
+    this->bottom_->request_status();
   this->phase_ = Phase::REFRESHING;
   this->phase_since_ = millis();
 }
@@ -234,6 +295,7 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
   //
   // A genuinely newer request submitted while this one runs replaces
   // pending_ with a later generation and is not lost by this.
+  this->current_request_at_ = this->pending_.submitted_at;
   this->pending_.active = false;
 
   const float top = this->position_(Rail::TOP);
@@ -332,12 +394,22 @@ bool MotionblindsBLETdbu::command_(Rail rail, float window_target) {
   // Home Assistant log.
   ESP_LOGI(TAG, "Commanding %s rail to %.1f%% of the window (raw %u)", rail == Rail::TOP ? "top" : "bottom", achieved,
            static_cast<unsigned>(raw));
-  return motor->request_position(achieved);
+  return motor->request_position(achieved, this->current_request_at_);
 }
 
 void MotionblindsBLETdbu::advance_() {
   if (this->phase_ != Phase::LEADING || !this->has_trail_)
     return;
+
+  // Do not let the tracker choose the trailing rail first: that would delay
+  // the first physical movement. Once feedback proves the leader is moving,
+  // however, the second connection can be opened and keyed in parallel with
+  // the clearance move. No position command is sent here.
+  const bool trailing_lease_held = this->trail_ == Rail::TOP ? this->leased_top_ : this->leased_bottom_;
+  if (this->preconnect_trailing_ && !trailing_lease_held && this->motor_(this->lead_)->is_moving()) {
+    ESP_LOGI(TAG, "First rail is moving; preconnecting the second rail while clearance opens");
+    this->acquire_lease_(this->trail_);
+  }
 
   const float lead_position = this->position_(this->lead_);
   if (std::isnan(lead_position))
@@ -367,6 +439,9 @@ void MotionblindsBLETdbu::finish_() {
   this->has_trail_ = false;
   this->wait_ = Wait::NONE;
   this->operation_since_ = 0;
+  this->current_request_at_ = 0;
+  this->prepared_ = false;
+  this->prepared_since_ = 0;
   this->release_leases_();
   this->update_callback_.call();
 }
@@ -435,8 +510,15 @@ void MotionblindsBLETdbu::on_motor_update_() {
 
 void MotionblindsBLETdbu::loop() {
   if (this->phase_ == Phase::IDLE) {
-    if (this->pending_.active)
+    if (this->pending_.active) {
       this->begin_();
+    } else if (this->prepared_ && millis() - this->prepared_since_ > this->prepare_timeout_) {
+      ESP_LOGI(TAG, "Prepared connection window expired; releasing both rails");
+      this->prepared_ = false;
+      this->prepared_since_ = 0;
+      this->release_leases_();
+      this->update_callback_.call();
+    }
     return;
   }
 

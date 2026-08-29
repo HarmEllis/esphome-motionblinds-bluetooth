@@ -39,6 +39,11 @@ class MotionblindsBLEClient : public esp32_ble_client::BLEClientBase {
 
   void set_motor(MotionblindsBLEMotor *motor) { this->motor_ = motor; }
 
+  /// Ask the controller to establish the link at a short, responsive
+  /// connection interval. This is independent of fast_connect: it shortens
+  /// the GATT work for both the conservative and optimistic handshakes.
+  void set_low_latency_connection(bool enabled) { this->low_latency_connection_ = enabled; }
+
   /// Identify the motor by the four-character code it advertises rather than
   /// by a full address.
   ///
@@ -59,6 +64,7 @@ class MotionblindsBLEClient : public esp32_ble_client::BLEClientBase {
   void forget_address();
 
   bool parse_device(const espbt::ESPBTDevice &device) override;
+  void connect() override;
   bool gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
 
@@ -73,6 +79,7 @@ class MotionblindsBLEClient : public esp32_ble_client::BLEClientBase {
   uint32_t mac_code_{NO_MAC_CODE};
   const char *label_{""};
   bool enabled_{false};
+  bool low_latency_connection_{true};
 };
 
 }  // namespace esphome::motionblinds_ble

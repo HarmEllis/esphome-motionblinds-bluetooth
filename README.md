@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.27
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta1
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.27
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta1
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -121,9 +121,9 @@ cover:
 `rail: combined` gives you a single cover for how much of the window is
 covered, instead of or alongside the two rail covers.
 
-That one `diagnostics:` block adds eleven more entities — battery, signal,
+That one `diagnostics:` block adds twelve more entities — battery, signal,
 connection status and position freshness for both rails, a refresh button for
-each, and a status text for the blind. See [entities](#entities).
+each, a prepare button and a status text for the blind. See [entities](#entities).
 
 > **Set `fast_connect: true` and, on a paired blind, `optimistic: true`.** They
 > are off by default because they trade a little certainty for a lot of speed,
@@ -160,6 +160,7 @@ One entry per motor. A top-down bottom-up blind has two.
 | `invert` | no | `false` | The motor is mounted upside down, so its positions run the other way through the window. |
 | `window_min` / `window_max` | no | `0` / `100` | The part of the window this rail actually travels. Needed when the two motors of one blind are each calibrated over their own half. |
 | `fast_connect` | no | `false` | Send waiting work as soon as the motor is keyed, instead of asking where the rail is first. See [Making it fast](#skip-the-status-query-when-there-is-already-work-to-do). |
+| `low_latency_connection` | no | `true` | Prefer an 8.75–11.25 ms BLE connection interval during GATT setup and the handshake. Disable only if a motor proves incompatible. Independent of `fast_connect`. |
 | `disconnect_delay` | no | `15s` | Idle time before the connection is dropped; only starts once no move is in progress. Lower it on a node with several motors — see [Making it fast](#let-a-finished-motor-release-the-radio). |
 | `discovery_timeout` | no | `30s` | Listening time per round. Counted only while the scanner is actually running, because the tracker stops scanning whenever any client is connecting. |
 | `discovery_rounds` | no | `3` | Bounded listening rounds before giving up, with a growing pause between them. One window is fragile for a motor that advertises weakly; this is not an unbounded retry. |
@@ -195,6 +196,8 @@ same geometry — the rails delimit a segment, and only its meaning differs:
 | `top_motor` / `bottom_motor` | yes | | The two motors. |
 | `fabric` | no | `between_rails` | `between_rails` or `outside_in`. |
 | `optimistic` | no | `false` | Move from the remembered rail positions instead of reading both motors first. The single largest influence on how responsive the blind feels — see [Making it fast](#trust-what-is-remembered-optimistic). |
+| `preconnect_trailing` | no | `true` | While the leading rail opens a safe gap, connect the rail that will move second. Its movement command remains blocked until clearance is observed. |
+| `prepare_timeout` | no | `120s` | How long the diagnostics `prepare` button keeps both links warm for an upcoming command. |
 | `min_gap` | no | `0%` | How close the rails may be commanded. Zero by default: on most of these blinds the rails stack against each other at either end, and the motors stop themselves if they meet. Raise it only for a blind whose rails genuinely cannot come together. |
 | `safety_margin` | no | `0%` | Added on top of `min_gap` when computing targets, for whole-numbered feedback and motor overshoot. |
 | `start_gap` | no | `10%` | Observed gap below which two rails may not be *set off* at the same moment. They may travel together; starting together while they are close is what drives them into each other. |
@@ -208,7 +211,7 @@ same geometry — the rails delimit a segment, and only its meaning differs:
 `bottom` or `combined`. For a lone motor, `motionblinds_ble` with
 `motionblinds_ble_id`. Both accept the usual `cover` options.
 
-**Diagnostics for a whole blind.** One block, eleven entities:
+**Diagnostics for a whole blind.** One block, twelve entities:
 
 ```yaml
 motionblinds_ble_tdbu:
@@ -224,6 +227,13 @@ after the prefix (`Living blind status`, `Living blind top battery`,
 `Living blind bottom refresh`, and so on). The coordinator already knows both
 motors, so declaring twenty near-identical entities for a three-blind room is
 busywork.
+
+It also adds `Living blind prepare`. Press it shortly before a scheduled move
+to connect and key both motors without moving either rail. The status changes
+from `preparing both rails` to `ready for immediate command`; the next cover
+command then reuses those links and the leases expire automatically after
+`prepare_timeout`. In Home Assistant, call the button from an automation one or
+two minutes before the cover action.
 
 The status text is the one to watch when nothing moves: it names the rail that
 blocked the move rather than leaving you to infer it.
@@ -378,6 +388,34 @@ Each phase has a different remedy, which is the whole point of splitting them:
 *heard* is the scanner's duty cycle, *link* is the controller reaching the motor,
 *services* is GATT discovery and its cache, and *notifications* and *key* are the
 motor answering. **Fix the phase you actually have.**
+
+Every position write also reports the end-to-end queue time:
+
+```
+[living_top] Position command reached BLE 1.247s after it was requested
+```
+
+That is the number to compare while testing this pre-release. It includes
+advertisement discovery, connection setup, keying and any safety wait, but not
+the rail's mechanical reaction after the write.
+
+### Prepare scheduled moves
+
+No firmware can hear a battery motor before it advertises. For a move whose
+time is known in advance, the only way to remove that cold-start wait from the
+visible response is to pay it just beforehand. The TDBU diagnostics `prepare`
+button opens both links, obtains fresh positions and holds them for two minutes
+by default. It does not send a movement command.
+
+Trigger it from Home Assistant roughly 60–90 seconds before the cover command.
+Wait for the diagnostic status `ready for immediate command` when exact timing
+matters. This works with both `fast_connect: false` and `true`: once both motors
+are ready and their positions are fresh, neither path performs a redundant
+status query.
+
+For close rails that must move in sequence, `preconnect_trailing: true` overlaps
+the second motor's connection with the first rail opening clearance. The second
+movement is still withheld until position feedback proves the gap is safe.
 
 ### Raise `connection_scan_window`
 

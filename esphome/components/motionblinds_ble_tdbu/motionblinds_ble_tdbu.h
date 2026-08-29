@@ -51,6 +51,12 @@ class MotionblindsBLETdbu : public Component {
   /// motors before every move. See the README: this trades correctness under a
   /// physical remote for a very large reduction in latency.
   void set_optimistic(bool optimistic) { this->optimistic_ = optimistic; }
+  /// Connect the rail that will move second while the first rail is opening
+  /// clearance. Its movement command is still held until the measured gap is
+  /// safe; only the otherwise-serial BLE setup is overlapped.
+  void set_preconnect_trailing(bool enabled) { this->preconnect_trailing_ = enabled; }
+  /// How long prepare() keeps both motor links warm while idle.
+  void set_prepare_timeout(uint32_t ms) { this->prepare_timeout_ = ms; }
   void set_clearance_timeout(uint32_t ms) { this->clearance_timeout_ = ms; }
   void set_lease_timeout(uint32_t ms) { this->lease_timeout_ = ms; }
 
@@ -67,6 +73,9 @@ class MotionblindsBLETdbu : public Component {
   void set_fabric_centre(float centre);
   void stop_rail(Rail rail);
   void stop_all();
+  /// Warm both links before a time-critical command. Intended for an HA
+  /// automation shortly before a scheduled move; automatically expires.
+  void prepare();
 
   // ---------------------------------------------------------------- state
   /// The motor driving one rail, for entities that report per-motor state.
@@ -116,6 +125,7 @@ class MotionblindsBLETdbu : public Component {
     bool has_length{false};
     bool has_centre{false};
     uint32_t generation{0};
+    uint32_t submitted_at{0};
   };
 
   MotionblindsBLEMotor *motor_(Rail rail) const { return rail == Rail::TOP ? this->top_ : this->bottom_; }
@@ -146,6 +156,8 @@ class MotionblindsBLETdbu : public Component {
   float safety_margin_{0.0f};
   float start_gap_{10.0f};
   bool optimistic_{false};
+  bool preconnect_trailing_{true};
+  uint32_t prepare_timeout_{120000};
   uint32_t clearance_timeout_{60000};
   uint32_t lease_timeout_{180000};
   Geometry geometry_{};
@@ -164,8 +176,11 @@ class MotionblindsBLETdbu : public Component {
   Phase phase_{Phase::IDLE};
   uint32_t phase_since_{0};
   uint32_t operation_since_{0};
+  uint32_t current_request_at_{0};
   bool leased_top_{false};
   bool leased_bottom_{false};
+  bool prepared_{false};
+  uint32_t prepared_since_{0};
   const char *last_error_{nullptr};
 
   Rail lead_{Rail::TOP};

@@ -72,6 +72,13 @@ void MotionblindsBLETdbuRefreshButton::press_action() {
   if (auto *motor = this->tdbu_->motor(this->rail_))
     motor->request_status();
 }
+
+void MotionblindsBLETdbuPrepareButton::dump_config() { LOG_BUTTON("", "Motionblinds BLE TDBU Prepare", this); }
+
+void MotionblindsBLETdbuPrepareButton::press_action() {
+  if (this->tdbu_ != nullptr)
+    this->tdbu_->prepare();
+}
 #endif
 
 }  // namespace esphome::motionblinds_ble_tdbu

@@ -163,11 +163,11 @@ void MotionblindsBLEMotor::dump_config() {
 
 // ---------------------------------------------------------------- requests
 
-bool MotionblindsBLEMotor::request_position(float window_position) {
+bool MotionblindsBLEMotor::request_position(float window_position, uint32_t requested_at) {
   if (std::isnan(window_position))
     return false;
   const uint8_t raw = static_cast<uint8_t>(lroundf(this->range_.to_raw(window_position)));
-  return this->enqueue_(Command::PERCENT, raw, Verification::SETTLED, raw);
+  return this->enqueue_(Command::PERCENT, raw, Verification::SETTLED, raw, requested_at);
 }
 
 bool MotionblindsBLEMotor::request_open() {
@@ -196,7 +196,7 @@ bool MotionblindsBLEMotor::request_stop() {
 
   if (this->state_ == MotorState::READY && this->command_handle_ != 0) {
     if (this->write_command_(Command::STOP, 0)) {
-      this->in_flight_ = PendingCommand{Command::STOP, 0, Verification::ACKED, 0, 0};
+      this->in_flight_ = PendingCommand{Command::STOP, 0, Verification::ACKED, 0, 0, millis()};
       this->command_in_flight_ = true;
       this->command_sent_at_ = millis();
       this->command_budget_ = COMMAND_ACK_TIMEOUT_MS;
@@ -240,11 +240,14 @@ void MotionblindsBLEMotor::request_disconnect() {
   this->abort_();
 }
 
-bool MotionblindsBLEMotor::enqueue_(Command command, uint8_t argument, Verification verification, uint8_t target) {
+bool MotionblindsBLEMotor::enqueue_(Command command, uint8_t argument, Verification verification, uint8_t target,
+                                    uint32_t requested_at) {
   if (this->time_ == nullptr) {
     ESP_LOGE(TAG, "[%s] Refusing command: no time source configured", this->label_);
     return false;
   }
+
+  const uint32_t queued_at = requested_at != 0 ? requested_at : millis();
 
   // A newer position request replaces an older one that has not gone out yet;
   // queueing both would drive the rail to a position nobody still wants.
@@ -255,6 +258,7 @@ bool MotionblindsBLEMotor::enqueue_(Command command, uint8_t argument, Verificat
         queued.target = target;
         queued.verification = verification;
         queued.delivery_attempts = 0;
+        queued.queued_at = queued_at;
         this->start_operation_();
         return true;
       }
@@ -266,7 +270,7 @@ bool MotionblindsBLEMotor::enqueue_(Command command, uint8_t argument, Verificat
     return false;
   }
 
-  this->queue_.push_back(PendingCommand{command, argument, verification, target, 0});
+  this->queue_.push_back(PendingCommand{command, argument, verification, target, 0, queued_at});
   this->start_operation_();
   return true;
 }
@@ -750,6 +754,11 @@ void MotionblindsBLEMotor::dispatch_() {
   if (!this->write_command_(command.command, command.argument)) {
     this->fail_("could not write command");
     return;
+  }
+
+  if (command.command == Command::PERCENT) {
+    ESP_LOGI(TAG, "[%s] Position command reached BLE %.3fs after it was requested", this->label_,
+             static_cast<double>(now - command.queued_at) / 1000.0);
   }
 
   this->in_flight_ = command;

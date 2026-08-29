@@ -102,7 +102,9 @@ class MotionblindsBLEMotor : public Component {
   // ------------------------------------------------------------- commands
   /// Drive the rail to a window position. Returns false when the request was
   /// rejected outright, which is not the same as the motor failing later.
-  bool request_position(float window_position);
+  /// requested_at may carry an upstream coordinator's timestamp so the log
+  /// includes safety/refresh waits before the command reached this motor.
+  bool request_position(float window_position, uint32_t requested_at = 0);
   bool request_open();
   bool request_close();
   bool request_stop();
@@ -166,6 +168,9 @@ class MotionblindsBLEMotor : public Component {
     /// the command so a future reconnect/requeue cannot accidentally reset the
     /// bounded delivery retry.
     uint8_t delivery_attempts{0};
+    /// When the caller first asked for this command. Logged at the actual BLE
+    /// write so a field test measures command-to-radio latency directly.
+    uint32_t queued_at{0};
   };
 
   /// Handshake progress. Notifications are not usable until the descriptor
@@ -213,7 +218,8 @@ class MotionblindsBLEMotor : public Component {
   /// layout that happens to be five bytes -- reaches us intact.
   static bool persisted_state_valid(const PersistedState &stored);
 
-  bool enqueue_(Command command, uint8_t argument, Verification verification, uint8_t target = 0);
+  bool enqueue_(Command command, uint8_t argument, Verification verification, uint8_t target = 0,
+                uint32_t requested_at = 0);
   void start_operation_();
   void finish_operation_();
   void fail_(const char *reason);

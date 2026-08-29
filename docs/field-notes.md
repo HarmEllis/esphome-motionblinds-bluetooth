@@ -436,6 +436,20 @@ already starts in the connect event and saves about three milliseconds, and the
 GATT cache already removes rediscovery. No evidence that discovery rather than
 advertisement capture owns the connection time.
 
+**Preferred connection interval.** The legacy BLE client path used by this
+component leaves ESP-IDF's 12.5–15 ms default in place. The pre-release now asks
+for ESPHome's balanced 8.75–11.25 ms interval before opening the link. This is a
+small GATT/handshake optimization, not a remedy for seconds spent waiting for
+an advertisement, and is configurable as `low_latency_connection` in case a
+motor rejects it.
+
+**Prewarming instead of pretending cold start can disappear.** The tracker must
+still hear an advertisement and opens clients serially. For scheduled moves the
+TDBU `prepare` button pays that cost beforehand and holds bounded leases; for a
+close-gap move the trailing motor is only made eligible after feedback proves
+the leader is physically moving, then connects while clearance opens. In both
+cases a movement command remains subject to the same observed-clearance rule.
+
 ## Tried and rejected
 
 **Scaling a rail's position against the other rail's remaining travel.** What

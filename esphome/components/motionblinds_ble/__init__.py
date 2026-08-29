@@ -71,6 +71,7 @@ CONF_RECOVER_BY_REBOOT = "recover_by_reboot"
 CONF_RECOVER_AFTER = "recover_after"
 CONF_DISCOVERY_ROUNDS = "discovery_rounds"
 CONF_FAST_CONNECT = "fast_connect"
+CONF_LOW_LATENCY_CONNECTION = "low_latency_connection"
 
 # Bumped when the stored layout changes, so an old blob is never found rather
 # than found and misread.
@@ -193,6 +194,10 @@ CONFIG_SCHEMA = cv.All(
             # unbounded retry.
             cv.Optional(CONF_DISCOVERY_ROUNDS, default=3): cv.int_range(min=1, max=10),
             cv.Optional(CONF_FAST_CONNECT, default=False): cv.boolean,
+            # Prefer an 8.75-11.25ms BLE interval while opening the link and
+            # doing GATT work. Kept configurable for unusual controllers that
+            # reject anything faster than ESP-IDF's legacy default.
+            cv.Optional(CONF_LOW_LATENCY_CONNECTION, default=True): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -288,6 +293,7 @@ async def to_code(config):
     # so that connections are serialised by the tracker and the motor's address
     # type is learned from its advertisement.
     cg.add(client.set_auto_connect(True))
+    cg.add(client.set_low_latency_connection(config[CONF_LOW_LATENCY_CONNECTION]))
     # Both halves log under the motor's own id, so six motors stay legible.
     cg.add(client.set_label(str(config[CONF_ID])))
 

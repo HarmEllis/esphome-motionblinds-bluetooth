@@ -34,6 +34,7 @@ esp32_ble:
 esp32_ble_tracker:
   scan_parameters:
     continuous: true
+    connection_scan_window: 160ms
 
 motionblinds_ble:
   # Identified by the code the motor advertises as MOTION_0A5A, rather than by
@@ -43,6 +44,9 @@ motionblinds_ble:
     mac_code: 0A5A
     time_id: local_time
     blind_type: honeycomb
+    # Leave fast_connect at its default false in this fixture so CI compiles
+    # the conservative handshake as well as the quick-start's fast path.
+    low_latency_connection: true
   - id: living_bottom
     mac_code: EBAA
     time_id: local_time
@@ -61,6 +65,8 @@ motionblinds_ble_tdbu:
     # Nothing but this component moves this blind, so the remembered positions
     # can be trusted and a move does not have to wait for both motors first.
     optimistic: true
+    preconnect_trailing: true
+    prepare_timeout: 120s
     # Builds battery, signal, connection, position freshness and a refresh
     # button for both rails.
     diagnostics:
