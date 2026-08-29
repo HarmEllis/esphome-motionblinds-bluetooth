@@ -31,6 +31,13 @@ jobs:
             test/tdbu_test.cpp -o tdbu_test
           ./tdbu_test
 
+      - name: Position command recovery
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I esphome/components/motionblinds_ble \
+            test/recovery_test.cpp -o recovery_test
+          ./recovery_test
+
   config:
     name: Validate configurations
     runs-on: ubuntu-latest

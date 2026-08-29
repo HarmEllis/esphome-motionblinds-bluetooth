@@ -162,6 +162,10 @@ class MotionblindsBLEMotor : public Component {
     uint8_t argument;
     Verification verification;
     uint8_t target;  ///< raw target position, for SETTLED verification
+    /// Number of times this absolute command was actually written. Kept on
+    /// the command so a future reconnect/requeue cannot accidentally reset the
+    /// bounded delivery retry.
+    uint8_t delivery_attempts{0};
   };
 
   /// Handshake progress. Notifications are not usable until the descriptor
@@ -222,6 +226,9 @@ class MotionblindsBLEMotor : public Component {
   /// to command it actually went.
   void log_connect_phases_();
   void dispatch_();
+  /// Re-send an in-flight absolute position after an explicit STATUS frame
+  /// proves the previous unacknowledged write did not reach its target.
+  bool retry_position_();
   bool write_command_(Command command, uint8_t argument);
   void handle_notification_(const uint8_t *data, uint16_t length);
   void apply_notification_(const Notification &notification);
@@ -301,6 +308,7 @@ class MotionblindsBLEMotor : public Component {
   bool command_in_flight_{false};
   bool stuck_reported_{false};
   bool settle_rechecked_{false};
+  bool position_retry_pending_{false};
   int8_t travel_direction_{0};
   PendingCommand in_flight_{};
   uint8_t settle_matches_{0};

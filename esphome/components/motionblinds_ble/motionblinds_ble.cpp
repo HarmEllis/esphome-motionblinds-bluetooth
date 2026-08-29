@@ -9,6 +9,7 @@
 #include "esphome/core/hal.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 #include "esphome/core/log.h"
+#include "motionblinds_ble_recovery.h"
 
 namespace esphome::motionblinds_ble {
 
@@ -188,13 +189,14 @@ bool MotionblindsBLEMotor::request_stop() {
   this->queue_.clear();
   this->command_in_flight_ = false;
   this->settle_matches_ = 0;
+  this->position_retry_pending_ = false;
   this->moving_ = false;
   this->travel_direction_ = 0;
   this->publish_();
 
   if (this->state_ == MotorState::READY && this->command_handle_ != 0) {
     if (this->write_command_(Command::STOP, 0)) {
-      this->in_flight_ = PendingCommand{Command::STOP, 0, Verification::ACKED, 0};
+      this->in_flight_ = PendingCommand{Command::STOP, 0, Verification::ACKED, 0, 0};
       this->command_in_flight_ = true;
       this->command_sent_at_ = millis();
       this->command_budget_ = COMMAND_ACK_TIMEOUT_MS;
@@ -252,6 +254,7 @@ bool MotionblindsBLEMotor::enqueue_(Command command, uint8_t argument, Verificat
         queued.argument = argument;
         queued.target = target;
         queued.verification = verification;
+        queued.delivery_attempts = 0;
         this->start_operation_();
         return true;
       }
@@ -263,7 +266,7 @@ bool MotionblindsBLEMotor::enqueue_(Command command, uint8_t argument, Verificat
     return false;
   }
 
-  this->queue_.push_back(PendingCommand{command, argument, verification, target});
+  this->queue_.push_back(PendingCommand{command, argument, verification, target, 0});
   this->start_operation_();
   return true;
 }
@@ -654,6 +657,16 @@ void MotionblindsBLEMotor::dispatch_() {
   const uint32_t now = millis();
 
   if (this->command_in_flight_) {
+    // Notification callbacks only record this decision. Writing from inside a
+    // GATT callback would re-enter the BLE stack; perform the retry from the
+    // normal component loop instead.
+    if (this->position_retry_pending_) {
+      this->position_retry_pending_ = false;
+      if (!this->retry_position_())
+        this->fail_("could not retry the commanded position");
+      return;
+    }
+
     switch (this->in_flight_.verification) {
       case Verification::ACKED:
         if (now - this->command_sent_at_ > this->command_budget_) {
@@ -726,10 +739,13 @@ void MotionblindsBLEMotor::dispatch_() {
       now - this->last_command_finished_ < MIN_COMMAND_GAP_MS)
     return;
 
-  const PendingCommand command = this->queue_.front();
+  PendingCommand command = this->queue_.front();
   this->queue_.erase(this->queue_.begin());
 
   const int distance = std::abs(static_cast<int>(command.target) - static_cast<int>(this->raw_position_));
+
+  if (command.command == Command::PERCENT)
+    command.delivery_attempts++;
 
   if (!this->write_command_(command.command, command.argument)) {
     this->fail_("could not write command");
@@ -741,6 +757,7 @@ void MotionblindsBLEMotor::dispatch_() {
   this->command_sent_at_ = now;
   this->settle_matches_ = 0;
   this->settle_rechecked_ = false;
+  this->position_retry_pending_ = false;
   this->recheck_attempts_ = 0;
   this->last_activity_ = now;
 
@@ -778,6 +795,48 @@ void MotionblindsBLEMotor::dispatch_() {
   // until the first frame came back -- and a silent motor would look idle for
   // the whole travel budget.
   this->publish_();
+}
+
+bool MotionblindsBLEMotor::retry_position_() {
+  if (!this->command_in_flight_ || this->in_flight_.command != Command::PERCENT ||
+      this->in_flight_.verification != Verification::SETTLED)
+    return false;
+
+  if (position_recovery_action(this->raw_position_, this->in_flight_.target,
+                               this->in_flight_.delivery_attempts) != PositionRecoveryAction::RETRY)
+    return false;
+
+  const uint32_t now = millis();
+  const int distance =
+      std::abs(static_cast<int>(this->in_flight_.target) - static_cast<int>(this->raw_position_));
+
+  ESP_LOGW(TAG, "[%s] Status confirms position %u instead of %u; sending the absolute position again "
+                "(attempt %u of %u)",
+           this->label_, static_cast<unsigned>(this->raw_position_),
+           static_cast<unsigned>(this->in_flight_.target),
+           static_cast<unsigned>(this->in_flight_.delivery_attempts + 1),
+           static_cast<unsigned>(MAX_POSITION_DELIVERY_ATTEMPTS));
+
+  if (!this->write_command_(this->in_flight_.command, this->in_flight_.argument))
+    return false;
+
+  this->in_flight_.delivery_attempts++;
+  this->command_sent_at_ = now;
+  this->command_budget_ = TRAVEL_TIMEOUT_BASE_MS + distance * TRAVEL_TIMEOUT_PER_PERCENT_MS;
+  this->settle_matches_ = 0;
+  this->settle_rechecked_ = false;
+  this->recheck_attempts_ = 0;
+  this->last_activity_ = now;
+  this->moving_ = true;
+  this->travel_direction_ =
+      this->in_flight_.target == this->raw_position_
+          ? 0
+          : (this->range_.to_window(static_cast<float>(this->in_flight_.target)) >
+                     this->range_.to_window(static_cast<float>(this->raw_position_))
+                 ? 1
+                 : -1);
+  this->publish_();
+  return true;
 }
 
 bool MotionblindsBLEMotor::write_command_(Command command, uint8_t argument) {
@@ -1001,6 +1060,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
             this->settle_rechecked_) {
           ESP_LOGI(TAG, "[%s] Reached %u", this->label_, static_cast<unsigned>(this->raw_position_));
           this->command_in_flight_ = false;
+          this->position_retry_pending_ = false;
           this->moving_ = false;
           this->travel_direction_ = 0;
           this->finish_operation_();
@@ -1009,6 +1069,19 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
       } else {
         this->settle_matches_ = 0;
         this->moving_ = true;
+        // This branch is deliberately limited to an explicit answer to the
+        // post-travel STATUS_QUERY. Intermediate FEEDBACK frames merely show
+        // that the rail is still moving and must never trigger another move.
+        if (notification.type == NotificationType::STATUS && this->settle_rechecked_) {
+          const PositionRecoveryAction action =
+              position_recovery_action(this->raw_position_, this->in_flight_.target,
+                                       this->in_flight_.delivery_attempts);
+          if (action == PositionRecoveryAction::RETRY) {
+            this->position_retry_pending_ = true;
+          } else if (action == PositionRecoveryAction::EXHAUSTED) {
+            this->fail_("motor stayed away from the commanded position after retrying it");
+          }
+        }
       }
     }
   } else if (first_reading || previous != this->raw_position_) {
@@ -1062,6 +1135,7 @@ void MotionblindsBLEMotor::fail_(const char *reason) {
 void MotionblindsBLEMotor::retry_connection_(const char *reason) {
   ESP_LOGW(TAG, "[%s] Connection was %s, dropping it to try a fresh one", this->label_, reason);
   this->command_in_flight_ = false;
+  this->position_retry_pending_ = false;
   this->command_handle_ = 0;
   this->notify_handle_ = 0;
   this->config_descriptor_handle_ = 0;
@@ -1078,6 +1152,7 @@ void MotionblindsBLEMotor::abort_() {
   this->moving_ = false;
   this->travel_direction_ = 0;
   this->settle_matches_ = 0;
+  this->position_retry_pending_ = false;
   this->command_handle_ = 0;
   this->notify_handle_ = 0;
   this->config_descriptor_handle_ = 0;
@@ -1096,6 +1171,7 @@ void MotionblindsBLEMotor::abort_() {
 void MotionblindsBLEMotor::on_disconnect_complete(esp_err_t reason) {
   ESP_LOGD(TAG, "[%s] Link torn down (reason %d)", this->label_, reason);
   this->command_in_flight_ = false;
+  this->position_retry_pending_ = false;
   this->moving_ = false;
   this->command_handle_ = 0;
   this->notify_handle_ = 0;
