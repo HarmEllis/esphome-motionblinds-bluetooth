@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -44,6 +45,10 @@ static const uint32_t TRAVEL_TIMEOUT_PER_PERCENT_MS = 700;
 /// were all well inside it. If second commands still go unconfirmed, this is
 /// the first number to raise.
 static const uint32_t MIN_COMMAND_GAP_MS = 3000;
+/// A restored peer should advertise within one normal cycle. Bound the cached
+/// shortcut more tightly than a first-time discovery so a changed random
+/// address is discarded quickly.
+static const uint32_t CACHED_CONNECT_TIMEOUT_MS = 12000;
 static const uint8_t MAX_ATTEMPTS = 3;
 static const uint8_t QUEUE_LIMIT = 8;
 /// Two consecutive frames on target before a move counts as settled, so a
@@ -295,6 +300,7 @@ void MotionblindsBLEMotor::start_operation_() {
     this->backoff_until_ = 0;
     this->set_state_(MotorState::DISCOVERING);
     this->connecting_since_ = 0;
+    this->ble_client_->try_cached_connect();
   }
 }
 
@@ -411,8 +417,17 @@ void MotionblindsBLEMotor::loop() {
       // node for one slow connect, and left the reboot recovery below
       // permanently out of reach. While the open is pending, the stuck deadline
       // is the only one that applies.
-      if (this->connecting_since_ == 0 || now - this->connecting_since_ <= this->stuck_connect_timeout_)
+      if (this->connecting_since_ == 0 || now - this->connecting_since_ <= this->stuck_connect_timeout_) {
+        // Enhanced open can be cancelled. Stop an absent motor at the normal
+        // connect deadline instead of letting its initiator block scanning for
+        // every other motor until the long stuck-stack deadline.
+        const uint32_t cancel_after = this->ble_client_->cached_connect_pending()
+                                          ? std::min(this->connect_timeout_, CACHED_CONNECT_TIMEOUT_MS)
+                                          : this->connect_timeout_;
+        if (this->connecting_since_ != 0 && now - this->connecting_since_ > cancel_after)
+          this->ble_client_->cancel_pending_connect();
         break;
+      }
 
       if (!this->recover_by_reboot_) {
         this->fail_("stuck connecting, no connection event from the stack");
@@ -474,10 +489,20 @@ void MotionblindsBLEMotor::loop() {
       // is done and before the link is dropped, so it costs waiting time the
       // motor was going to spend idle anyway.
       if (this->fast_connect_ && !this->status_seen_ && !this->status_backfilled_ && this->queue_.empty() &&
-          !this->command_in_flight_ &&
+          !this->command_in_flight_ && now - this->last_activity_ > this->disconnect_delay_ &&
           (!this->ever_status_ || now - this->last_status_at_ > STATUS_REFRESH_MS)) {
         this->status_backfilled_ = true;
+        this->disconnect_after_status_backfill_ = true;
         this->request_status();
+        break;
+      }
+      if (this->disconnect_after_status_backfill_ && this->queue_.empty() && !this->command_in_flight_ &&
+          !this->leased()) {
+        // The query was deliberately postponed until the ordinary idle
+        // deadline so foreground work could take the slot. Drop immediately
+        // after its answer instead of paying that idle delay a second time.
+        this->finish_operation_();
+        this->abort_();
         break;
       }
       if (this->queue_.empty() && !this->command_in_flight_ && !this->leased() &&
@@ -557,6 +582,7 @@ void MotionblindsBLEMotor::reconcile_state_() {
                      static_cast<unsigned>(MAX_ATTEMPTS));
             this->ble_client_->set_enabled(true);
             this->set_state_(MotorState::DISCOVERING);
+            this->ble_client_->try_cached_connect();
           }
         }
       }
@@ -1168,6 +1194,7 @@ void MotionblindsBLEMotor::abort_() {
   this->handshake_ = Handshake::NONE;
   this->status_seen_ = false;
   this->status_backfilled_ = false;
+  this->disconnect_after_status_backfill_ = false;
   this->mark_stale_();
 
   if (this->ble_client_ != nullptr) {

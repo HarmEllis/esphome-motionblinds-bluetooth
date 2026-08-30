@@ -72,6 +72,8 @@ CONF_RECOVER_AFTER = "recover_after"
 CONF_DISCOVERY_ROUNDS = "discovery_rounds"
 CONF_FAST_CONNECT = "fast_connect"
 CONF_LOW_LATENCY_CONNECTION = "low_latency_connection"
+CONF_CACHED_CONNECT = "cached_connect"
+CONF_HIGH_DUTY_CYCLE_CONNECT = "high_duty_cycle_connect"
 
 # Bumped when the stored layout changes, so an old blob is never found rather
 # than found and misread.
@@ -104,6 +106,20 @@ def _preference_key(config) -> int:
     # FNV-1a, for no reason beyond being short and well spread.
     digest = 0x811C9DC5
     for byte in f"motionblinds_ble:{PREFERENCE_VERSION}:{identity}".encode():
+        digest ^= byte
+        digest = (digest * 0x01000193) & 0xFFFFFFFF
+    return digest
+
+
+def _peer_preference_key(config) -> int:
+    """A separate namespace for the learned address and address type."""
+    if mac_address := config.get(CONF_MAC_ADDRESS):
+        identity = "mac:" + bytes(mac_address.parts).hex()
+    else:
+        identity = "code:" + config[CONF_MAC_CODE].upper()
+
+    digest = 0x811C9DC5
+    for byte in f"motionblinds_ble_peer:1:{identity}".encode():
         digest ^= byte
         digest = (digest * 0x01000193) & 0xFFFFFFFF
     return digest
@@ -198,6 +214,14 @@ CONFIG_SCHEMA = cv.All(
             # doing GATT work. Kept configurable for unusual controllers that
             # reject anything faster than ESP-IDF's legacy default.
             cv.Optional(CONF_LOW_LATENCY_CONNECTION, default=True): cv.boolean,
+            # Once an advertisement has supplied both address and address type,
+            # let later requests enter the tracker's serialised connection
+            # queue immediately. The first connection on a new installation
+            # uses ordinary discovery, and a failed cached attempt falls back.
+            cv.Optional(CONF_CACHED_CONNECT, default=True): cv.boolean,
+            # The legacy initiator listens only half the time. Enhanced open
+            # accepts a full scan window and can also be cancelled safely.
+            cv.Optional(CONF_HIGH_DUTY_CYCLE_CONNECT, default=True): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -294,6 +318,9 @@ async def to_code(config):
     # type is learned from its advertisement.
     cg.add(client.set_auto_connect(True))
     cg.add(client.set_low_latency_connection(config[CONF_LOW_LATENCY_CONNECTION]))
+    cg.add(client.set_cached_connect(config[CONF_CACHED_CONNECT]))
+    cg.add(client.set_high_duty_cycle_connect(config[CONF_HIGH_DUTY_CYCLE_CONNECT]))
+    cg.add(client.set_peer_preference_key(_peer_preference_key(config)))
     # Both halves log under the motor's own id, so six motors stay legible.
     cg.add(client.set_label(str(config[CONF_ID])))
 

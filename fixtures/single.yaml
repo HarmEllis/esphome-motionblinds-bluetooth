@@ -37,6 +37,7 @@ motionblinds_ble:
     mac_address: A4:C1:38:00:12:34
     time_id: local_time
     blind_type: roller
+    cached_connect: true
 
 cover:
   - platform: motionblinds_ble

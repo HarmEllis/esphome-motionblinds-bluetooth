@@ -264,6 +264,7 @@ class MotionblindsBLEMotor : public Component {
   /// and favourite; FEEDBACK does not.
   bool status_seen_{false};
   bool status_backfilled_{false};
+  bool disconnect_after_status_backfill_{false};
   bool ever_status_{false};
   uint32_t last_status_at_{0};
   /// What the flash store did at boot, and whether it has refused a write

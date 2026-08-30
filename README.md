@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta1
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta2
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta1
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta2
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -161,6 +161,8 @@ One entry per motor. A top-down bottom-up blind has two.
 | `window_min` / `window_max` | no | `0` / `100` | The part of the window this rail actually travels. Needed when the two motors of one blind are each calibrated over their own half. |
 | `fast_connect` | no | `false` | Send waiting work as soon as the motor is keyed, instead of asking where the rail is first. See [Making it fast](#skip-the-status-query-when-there-is-already-work-to-do). |
 | `low_latency_connection` | no | `true` | Prefer an 8.75–11.25 ms BLE connection interval during GATT setup and the handshake. Disable only if a motor proves incompatible. Independent of `fast_connect`. |
+| `cached_connect` | no | `true` | Reuse the learned address and address type so the controller can wait directly for the motor's next advertisement. Stored across restarts when `high_duty_cycle_connect` is enabled; a failed shortcut automatically returns to normal discovery. |
+| `high_duty_cycle_connect` | no | `true` | Use ESP-IDF's cancellable enhanced-open path and listen during 100% instead of 50% of the initiator scan interval. This raises ESP radio use only while establishing a connection, not the blind's connected time. |
 | `disconnect_delay` | no | `15s` | Idle time before the connection is dropped; only starts once no move is in progress. Lower it on a node with several motors — see [Making it fast](#let-a-finished-motor-release-the-radio). |
 | `discovery_timeout` | no | `30s` | Listening time per round. Counted only while the scanner is actually running, because the tracker stops scanning whenever any client is connecting. |
 | `discovery_rounds` | no | `3` | Bounded listening rounds before giving up, with a growing pause between them. One window is fragile for a motor that advertises weakly; this is not an unbounded retry. |
@@ -417,6 +419,39 @@ For close rails that must move in sequence, `preconnect_trailing: true` overlaps
 the second motor's connection with the first rail opening clearance. The second
 movement is still withheld until position feedback proves the gap is safe.
 
+### Reuse the learned BLE identity
+
+The first request after a boot must hear an advertisement to learn both the
+motor's full address and its address type. Older versions repeated that first
+wait on every cold connection even though both values were still in RAM. Only
+then did the BLE initiator start and wait for the motor's *next* advertisement.
+
+`cached_connect: true` (the default) skips that redundant first wait after a
+motor has been found once. It enters ESPHome's normal serialised connection
+queue immediately, so several motors still connect one at a time; it does not
+keep a link open and therefore adds no connected-radio time on the motor.
+
+The learned pair is stored across restarts when `high_duty_cycle_connect` is
+enabled. A random address can change, so a restored shortcut gets only twelve
+seconds or the configured `connect_timeout`, whichever is shorter. If it does
+not connect, enhanced open is cancelled, the stored pair is erased and the
+existing retry returns to advertisement discovery. The first connection after
+installing this version primes the flash cache; subsequent reboots can reuse it.
+
+### Listen throughout link establishment
+
+ESP-IDF's legacy BLE initiator listens for 30 ms in every 60 ms interval. A
+motor advertisement landing in the other half can be missed, which costs a
+whole extra advertising cycle. `high_duty_cycle_connect: true` uses the
+enhanced-open API with a 40/40 ms scan window while the link is being
+established. The extra receive time is on the mains-powered ESP and ends as soon
+as the link opens; it does not keep the blind connected.
+
+Enhanced open also supplies the missing cancellation primitive. An absent motor
+is cancelled at `connect_timeout`, allowing the scanner and the other motors to
+continue, with the longer `stuck_connect_timeout` retained only as a guard for a
+Bluetooth stack that fails even to complete cancellation.
+
 ### Raise `connection_scan_window`
 
 The single largest cost is usually waiting to hear a motor advertise, and on
@@ -507,7 +542,10 @@ work waiting, such as a refresh button press.
 One consequence is handled for you. Battery, speed and favourite arrive only in a
 status frame; the feedback frames a move produces do not carry them. So when the
 work is done and those values are over an hour old, the query is sent then,
-before the link is dropped, using time the motor was going to spend idle.
+before the link is dropped, using time the motor was going to spend idle. It is
+postponed until the normal idle deadline so a real follow-up command gets the
+next command slot instead of waiting behind this background refresh; after its
+answer the link is dropped immediately rather than paying the idle delay twice.
 
 ### Let a finished motor release the radio
 
@@ -536,14 +574,14 @@ second command sent too soon is accepted and silently ignored.
 
 `link` time is not explained by signal strength: 1.1 s at −78 dBm on one motor,
 10.2 s at −60 dBm on another. What `esp_ble_gattc_open()` waits for is the
-target's *next* advertisement, so the number that matters is how often that
-particular motor advertises — a property of the motor, which nothing on this side
-changes.
+target's next advertisement, so the number that matters is how often that
+particular motor advertises. Cached connect cannot change that interval; it can
+start waiting one advertisement earlier.
 
 The honest ceiling: connections on one ESP32 are established one at a time, and
-that is the tracker's design, not a bug. Three blinds moving from cold will not
-beat roughly the sum of three connection paths. If that is not fast enough, the
-answer is a second node.
+that is the tracker's design, not a bug. Cached connect shortens each path but
+does not make them parallel. If the remaining sum is not fast enough, the answer
+is a second node.
 
 ## What survives a restart
 
@@ -623,11 +661,10 @@ startup state from `dump_config()` instead, which is late enough to be readable.
 
 ## Known limitations
 
-- **A stuck connection attempt cannot be cancelled.** If the Bluetooth stack
-  never reports the outcome of a connection attempt, there is no way to abort it
-  through ESPHome's public API, and forcing the state locally would risk leaking
-  a live link. The component reports the error and, with `recover_by_reboot`,
-  restarts the node.
+- **The Bluetooth stack can still fail to complete cancellation.** Enhanced
+  open normally lets the component cancel an absent motor at `connect_timeout`.
+  If the stack does not report even that outcome, `stuck_connect_timeout` and
+  optional `recover_by_reboot` remain the final guard.
 - **Moves made while disconnected are seen late.** Someone using the physical
   remote while nothing is connected is only noticed at the next connection.
   Staying connected permanently would fix this at the cost of keeping

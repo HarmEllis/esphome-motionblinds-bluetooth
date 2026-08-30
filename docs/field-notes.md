@@ -167,6 +167,13 @@ public and connecting directly does not work. This is the main reason
 connections are made by enabling a client and letting the tracker promote it
 from an advertisement, rather than by calling `connect()`.
 
+Once learned, the address and type stay in the client for the rest of the boot.
+The component can therefore put that client back into the tracker's
+`DISCOVERED` queue without calling `connect()` itself. This preserves the
+tracker's one-at-a-time promotion while letting the initiator wait for the next
+advertisement immediately. A failed cached attempt invalidates the pair and
+falls back to the advertisement-driven path.
+
 ### Whether the timestamp is validated is still unknown
 
 Every command carries a wall-clock timestamp. The reference library always
@@ -240,14 +247,14 @@ The dispatch loop calls all clients with no early exit, and `already_discovered_
 is used solely to deduplicate log lines — it does not suppress dispatch. If a
 motor is not being discovered, the advertisement genuinely is not arriving.
 
-### A pending connect cannot be abandoned
+### A legacy pending connect cannot be abandoned
 
-`esp_ble_gattc_open()` has no cancel through ESPHome's public API, and giving up
-on it locally does not stop it — the base client stays in `CONNECTING`, and the
-tracker will not scan while any client is. So a short per-attempt deadline on a
-slow connect does not just fail that motor: it stalls discovery for every motor
-on the node while the open is still outstanding. Only the long stuck-connect
-deadline applies while an open is pending.
+`esp_ble_gattc_open()` has no cancel through ESPHome's base client, and giving
+up on it locally does not stop it — the client stays in `CONNECTING`, and the
+tracker will not scan while any client is. ESP-IDF 5.5.5's
+`esp_ble_gattc_enh_open()` and `esp_ble_gattc_cancel_open()` close that hole.
+This component uses them by default, cancels at `connect_timeout`, and keeps the
+long stuck deadline only for a stack that never confirms the cancellation.
 
 ### `on_disconnect_complete()` is protected
 
@@ -415,6 +422,16 @@ weakest motor did not improve its reading: -91 and -86 dBm on a board sitting
 beside the blind, against -87 dBm from a node across the room. A worse antenna
 gives back what proximity wins.
 
+A later `v0.0.28-beta1` test on the large blind, 2026-08-30, provided the first
+end-to-end command timestamps: 7.254, 5.951, 0.596 and 9.906 seconds (mean
+5.927). The three cold paths each spent about 5.1 seconds in `link`, after first
+spending 0.6 to 4.5 seconds in `heard`; services were already 0.0 seconds and
+notifications plus key about 0.3 seconds. The 0.596-second sample reused a live
+link. This is the evidence behind cached connect: the old cold path waits for
+one advertisement to be heard and then roughly one more inside the initiator.
+It also bounds what remains after the radio work -- only a few tenths of a
+second, unless the motor drops a write and invokes a deliberate retry.
+
 ---
 
 ## Ideas assessed and not taken
@@ -425,11 +442,18 @@ against 320 ms in 2026.6, so advice about this is only as good as the version it
 was written against. The duty cycle *during connections* is a different setting
 and is very much worth raising; see above.
 
-**Direct connect with a cached address and type.** Tempting, since waiting for
-an advertisement is the slow part. It does not help: `esp_ble_gattc_open()`
-still waits for the target's next advertisement, but does so inside the
-uncancellable `CONNECTING` state — moving the wait to the one place where it
-blocks every other motor on the node.
+**Trusting a persisted address forever.** The cached pair removes a redundant
+advertisement wait: instead of hearing one advertisement and then starting the
+initiator for the next, the initiator starts immediately. Some motors use random
+addresses, so the pair is not trusted indefinitely. A restored shortcut gets a
+bounded attempt through cancellable enhanced open; failure erases it and returns
+to advertisement discovery.
+
+**A higher-duty initiator.** The legacy connection scan defaults to 30/60 ms.
+Enhanced open accepts explicit create-connection parameters, so this component
+uses 40/40 ms while the link is pending. Missing one advertisement can cost a
+whole motor advertising cycle; listening continuously removes that avoidable
+half-duty gap. This affects the ESP radio only during link establishment.
 
 **MTU tuning and persisting raw handles.** The frames are tiny, MTU negotiation
 already starts in the connect event and saves about three milliseconds, and the
@@ -442,6 +466,11 @@ for ESPHome's balanced 8.75–11.25 ms interval before opening the link. This is
 small GATT/handshake optimization, not a remedy for seconds spent waiting for
 an advertisement, and is configurable as `low_latency_connection` in case a
 motor rejects it.
+
+**Keeping the link open.** A warm-path command measured 0.596 s, but buying that
+for every command means leaving a battery motor connected. This was rejected:
+the in-memory identity shortcut removes one advertisement cycle without adding
+any connected time.
 
 **Prewarming instead of pretending cold start can disappear.** The tracker must
 still hear an advertisement and opens clients serially. For scheduled moves the
