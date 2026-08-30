@@ -1,0 +1,36 @@
+# Must fail: a motor asked to move again within a second or two of the previous
+# command accepts it and then reports nothing, so a start check that can re-send
+# sooner than the minimum spacing between two commands would cause the very
+# fault it is meant to catch. Anything under 3s is rejected rather than clamped.
+esphome:
+  name: invalid-verify-start
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+wifi:
+  ssid: fixture
+  password: fixture-password
+
+external_components:
+  - source:
+      type: local
+      path: ../../esphome/components
+    components: [motionblinds_ble]
+
+time:
+  - platform: sntp
+    id: local_time
+
+esp32_ble:
+  max_connections: 1
+
+esp32_ble_tracker:
+
+motionblinds_ble:
+  - {id: m1, mac_address: A4:C1:38:00:00:01, time_id: local_time, verify_start_after: 1s}

@@ -12,6 +12,7 @@
 #include "esphome/core/preferences.h"
 
 #include "motionblinds_ble_client.h"
+#include "motionblinds_ble_recovery.h"
 #include "motionblinds_protocol.h"
 #include "motionblinds_rail.h"
 
@@ -98,6 +99,10 @@ class MotionblindsBLEMotor : public Component {
   /// where the rail is. Trades a status round trip for a later, slower failure
   /// when the key never arrived; see the README.
   void set_fast_connect(bool enabled) { this->fast_connect_ = enabled; }
+  /// How long after an absolute position write to check that the rail has left
+  /// its starting position at all. 0 disables the check; see
+  /// motionblinds_ble_recovery.h for what it does and does not conclude.
+  void set_verify_start_after(uint32_t ms) { this->verify_start_after_ = clamp_verify_start_after(ms); }
 
   // ------------------------------------------------------------- commands
   /// Drive the rail to a window position. Returns false when the request was
@@ -137,6 +142,26 @@ class MotionblindsBLEMotor : public Component {
   /// position restored from flash is good enough to show, never to move on.
   bool position_fresh() const { return this->position_fresh_; }
   bool is_moving() const { return this->moving_; }
+  /// Whether an absolute position write for this motor has actually gone out
+  /// over the radio, as opposed to having been accepted into the queue.
+  ///
+  /// Distinct from is_moving() on purpose: that flag is set by this node at
+  /// write time and is therefore a claim about our own intent, never evidence
+  /// about the rail. This one is only ever true between the write completing
+  /// and the command being resolved, which is exactly the window in which
+  /// position feedback can be attributed to our own command.
+  bool position_write_sent() const {
+    return this->command_in_flight_ && this->in_flight_.command == Command::PERCENT;
+  }
+  /// The raw position this motor was standing on when its in-flight absolute
+  /// command went out, if one was known.
+  bool command_origin(uint8_t &origin, bool &fresh) const {
+    if (!this->position_write_sent() || !this->in_flight_.origin_known)
+      return false;
+    origin = this->in_flight_.origin;
+    fresh = this->in_flight_.origin_fresh;
+    return true;
+  }
   /// Whether this motor still owes the caller anything: a queued command, or
   /// one whose outcome is not yet established.
   bool busy() const { return !this->queue_.empty() || this->command_in_flight_; }
@@ -171,6 +196,12 @@ class MotionblindsBLEMotor : public Component {
     /// When the caller first asked for this command. Logged at the actual BLE
     /// write so a field test measures command-to-radio latency directly.
     uint32_t queued_at{0};
+    /// Raw position the rail was standing on when this command was written, and
+    /// whether one was known at all. The early no-start check confirms against
+    /// this and nothing else.
+    uint8_t origin{0};
+    bool origin_known{false};
+    bool origin_fresh{false};
   };
 
   /// Handshake progress. Notifications are not usable until the descriptor
@@ -235,6 +266,13 @@ class MotionblindsBLEMotor : public Component {
   /// Re-send an in-flight absolute position after an explicit STATUS frame
   /// proves the previous unacknowledged write did not reach its target.
   bool retry_position_();
+  /// The bounded "did it ever leave" check that runs while a position command
+  /// is still inside its travel budget. Never touches command_sent_at_ or
+  /// command_budget_, and never fails a move.
+  void check_started_();
+  /// Clear the per-command early-check state. Every path that starts, replaces
+  /// or abandons an in-flight command has to call this.
+  void reset_start_check_();
   bool write_command_(Command command, uint8_t argument);
   void handle_notification_(const uint8_t *data, uint16_t length);
   void apply_notification_(const Notification &notification);
@@ -259,6 +297,7 @@ class MotionblindsBLEMotor : public Component {
   uint8_t discovery_rounds_{3};
   bool recover_by_reboot_{false};
   bool fast_connect_{false};
+  uint32_t verify_start_after_{DEFAULT_VERIFY_START_AFTER_MS};
   /// Whether a STATUS frame arrived during this connection, and whether the
   /// backfill query has already been tried. Only STATUS carries battery, speed
   /// and favourite; FEEDBACK does not.
@@ -316,6 +355,16 @@ class MotionblindsBLEMotor : public Component {
   bool stuck_reported_{false};
   bool settle_rechecked_{false};
   bool position_retry_pending_{false};
+  /// Early no-start verification, all per in-flight command. Kept apart from
+  /// the post-travel recheck's state so one frame can never be handled by both
+  /// paths, and so an exhausted early check can never reach the post-travel
+  /// path's fail_().
+  bool movement_observed_{false};
+  bool awaiting_start_status_{false};
+  bool start_retry_pending_{false};
+  uint8_t start_queries_{0};
+  uint8_t start_origin_confirmations_{0};
+  uint32_t start_query_at_{0};
   int8_t travel_direction_{0};
   PendingCommand in_flight_{};
   uint8_t settle_matches_{0};

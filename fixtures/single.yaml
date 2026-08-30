@@ -38,6 +38,10 @@ motionblinds_ble:
     time_id: local_time
     blind_type: roller
     cached_connect: true
+    # A position write is unacknowledged. Check after five seconds that the rail
+    # left its starting position at all, instead of waiting out the whole travel
+    # budget for a write that never arrived.
+    verify_start_after: 5s
 
 cover:
   - platform: motionblinds_ble

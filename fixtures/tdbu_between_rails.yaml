@@ -47,6 +47,9 @@ motionblinds_ble:
     # Leave fast_connect at its default false in this fixture so CI compiles
     # the conservative handshake as well as the quick-start's fast path.
     low_latency_connection: true
+    # Ask this rail whether it ever left, five seconds after a position write.
+    # A lost write is otherwise silent for the whole travel budget.
+    verify_start_after: 5s
   - id: living_bottom
     mac_code: EBAA
     time_id: local_time
@@ -65,6 +68,10 @@ motionblinds_ble_tdbu:
     # Nothing but this component moves this blind, so the remembered positions
     # can be trusted and a move does not have to wait for both motors first.
     optimistic: true
+    # Let the start rule see which way the rails are going. Two rails opening
+    # the gap start together; a translation releases the following rail as soon
+    # as the leading one is observed to have moved off.
+    direction_aware: true
     preconnect_trailing: true
     prepare_timeout: 120s
     # Builds battery, signal, connection, position freshness and a refresh

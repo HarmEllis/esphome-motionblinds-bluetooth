@@ -71,6 +71,7 @@ CONF_RECOVER_BY_REBOOT = "recover_by_reboot"
 CONF_RECOVER_AFTER = "recover_after"
 CONF_DISCOVERY_ROUNDS = "discovery_rounds"
 CONF_FAST_CONNECT = "fast_connect"
+CONF_VERIFY_START_AFTER = "verify_start_after"
 CONF_LOW_LATENCY_CONNECTION = "low_latency_connection"
 CONF_CACHED_CONNECT = "cached_connect"
 CONF_HIGH_DUTY_CYCLE_CONNECT = "high_duty_cycle_connect"
@@ -136,6 +137,28 @@ def _validate_mac_code(value):
         raise cv.Invalid(
             f"'{value}' is not a Motionblinds MAC code. Use the four hex characters "
             f"from the motor's name, for example 0A5A from MOTION_0A5A."
+        )
+    return value
+
+
+# Least sensible delay before asking a motor whether it ever left. Mirrors
+# MIN_VERIFY_START_AFTER_MS in motionblinds_ble_recovery.h, which is itself the
+# interval two commands to one motor must be spaced by.
+_MIN_VERIFY_START_AFTER_MS = 3000
+
+
+def _validate_verify_start_after(value):
+    value = cv.positive_time_period_milliseconds(value)
+    if value.total_milliseconds == 0:
+        # The documented way to switch the check off entirely.
+        return value
+    if value.total_milliseconds < _MIN_VERIFY_START_AFTER_MS:
+        minimum_seconds = _MIN_VERIFY_START_AFTER_MS // 1000
+        raise cv.Invalid(
+            f"'{CONF_VERIFY_START_AFTER}' must be at least {minimum_seconds}s, or 0s to disable "
+            "it. A healthy motor can still be inside its first reported percent "
+            "sooner than that, and re-sending a command to a rail that is "
+            "already moving is what makes these blinds do nothing at all."
         )
     return value
 
@@ -210,6 +233,15 @@ CONFIG_SCHEMA = cv.All(
             # unbounded retry.
             cv.Optional(CONF_DISCOVERY_ROUNDS, default=3): cv.int_range(min=1, max=10),
             cv.Optional(CONF_FAST_CONNECT, default=False): cv.boolean,
+            # A position write is unacknowledged, so a lost one is silent and
+            # only the travel budget notices -- half a minute later. This asks,
+            # once the rail has had time to get going, whether it moved at all.
+            # It never concludes anything from silence: it re-sends only when
+            # two spaced status frames report the exact position the command
+            # was sent from.
+            cv.Optional(
+                CONF_VERIFY_START_AFTER, default="5s"
+            ): _validate_verify_start_after,
             # Prefer an 8.75-11.25ms BLE interval while opening the link and
             # doing GATT work. Kept configurable for unusual controllers that
             # reject anything faster than ESP-IDF's legacy default.
@@ -340,6 +372,7 @@ async def to_code(config):
     cg.add(var.set_blind_type(config[CONF_BLIND_TYPE]))
     cg.add(var.set_discovery_rounds(config[CONF_DISCOVERY_ROUNDS]))
     cg.add(var.set_fast_connect(config[CONF_FAST_CONNECT]))
+    cg.add(var.set_verify_start_after(config[CONF_VERIFY_START_AFTER]))
     cg.add(
         var.set_rail_range(
             config[CONF_WINDOW_MIN], config[CONF_WINDOW_MAX], config[CONF_INVERT]

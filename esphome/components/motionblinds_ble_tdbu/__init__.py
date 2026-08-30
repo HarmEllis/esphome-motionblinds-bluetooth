@@ -70,6 +70,7 @@ CONF_FABRIC = "fabric"
 CONF_MIN_GAP = "min_gap"
 CONF_SAFETY_MARGIN = "safety_margin"
 CONF_START_GAP = "start_gap"
+CONF_DIRECTION_AWARE = "direction_aware"
 CONF_OPTIMISTIC = "optimistic"
 CONF_PRECONNECT_TRAILING = "preconnect_trailing"
 CONF_PREPARE_TIMEOUT = "prepare_timeout"
@@ -135,6 +136,12 @@ CONFIG_SCHEMA = cv.All(
             # moment. They may travel together; starting together while they are
             # close is what drives them into each other.
             cv.Optional(CONF_START_GAP, default="10%"): cv.percentage,
+            # Let the start rule see which way each rail is going. Two rails
+            # opening the gap can always start together; two rails translating
+            # keep a constant gap, so `start_gap` alone would serialise them
+            # completely. False restores the gap-only rule, which is what this
+            # is for: an escape hatch, not a feature flag.
+            cv.Optional(CONF_DIRECTION_AWARE, default=True): cv.boolean,
             # Trust the remembered positions instead of re-reading both motors
             # before every move. Much faster, and wrong if anything else moves
             # the blind. See the README.
@@ -168,6 +175,7 @@ async def to_code(config):
     cg.add(var.set_min_gap(config[CONF_MIN_GAP] * 100.0))
     cg.add(var.set_safety_margin(config[CONF_SAFETY_MARGIN] * 100.0))
     cg.add(var.set_start_gap(config[CONF_START_GAP] * 100.0))
+    cg.add(var.set_direction_aware(config[CONF_DIRECTION_AWARE]))
     cg.add(var.set_optimistic(config[CONF_OPTIMISTIC]))
     cg.add(var.set_preconnect_trailing(config[CONF_PRECONNECT_TRAILING]))
     cg.add(var.set_prepare_timeout(config[CONF_PREPARE_TIMEOUT]))

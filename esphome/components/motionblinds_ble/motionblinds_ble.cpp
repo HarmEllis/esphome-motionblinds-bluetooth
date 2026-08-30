@@ -44,7 +44,9 @@ static const uint32_t TRAVEL_TIMEOUT_PER_PERCENT_MS = 700;
 /// maintainer chose between status-query retries — and the failures seen here
 /// were all well inside it. If second commands still go unconfirmed, this is
 /// the first number to raise.
-static const uint32_t MIN_COMMAND_GAP_MS = 3000;
+static constexpr uint32_t MIN_COMMAND_GAP_MS = 3000;
+static_assert(MIN_VERIFY_START_AFTER_MS >= MIN_COMMAND_GAP_MS,
+              "start verification may not re-deliver inside the motor's command gap");
 /// A restored peer should advertise within one normal cycle. Bound the cached
 /// shortcut more tightly than a first-time discovery so a changed random
 /// address is discarded quickly.
@@ -135,11 +137,12 @@ void MotionblindsBLEMotor::dump_config() {
                 "  Disconnect delay: %us\n"
                 "  Discovery timeout: %us\n"
                 "  Fast connect: %s\n"
+                "  Verify start after: %us\n"
                 "  Recover by reboot: %s",
                 this->range_.window_min, this->range_.window_max, YESNO(this->range_.invert),
                 static_cast<unsigned>(this->disconnect_delay_ / 1000),
                 static_cast<unsigned>(this->discovery_timeout_ / 1000), YESNO(this->fast_connect_),
-                YESNO(this->recover_by_reboot_));
+                static_cast<unsigned>(this->verify_start_after_ / 1000), YESNO(this->recover_by_reboot_));
   // Reported here rather than from setup(), which runs before the API is up
   // and can therefore be read from neither Home Assistant nor the ESPHome
   // dashboard. At INFO rather than CONFIG for the same kind of reason: config
@@ -195,6 +198,7 @@ bool MotionblindsBLEMotor::request_stop() {
   this->command_in_flight_ = false;
   this->settle_matches_ = 0;
   this->position_retry_pending_ = false;
+  this->reset_start_check_();
   this->moving_ = false;
   this->travel_direction_ = 0;
   this->publish_();
@@ -697,6 +701,29 @@ void MotionblindsBLEMotor::dispatch_() {
       return;
     }
 
+    // The early re-send is deliberately a separate flag from the one above. An
+    // early check may never condemn a move, and the branch above fails one when
+    // the re-send cannot be written.
+    if (this->start_retry_pending_) {
+      this->start_retry_pending_ = false;
+      // A late feedback frame can arrive between the STATUS answer and this
+      // loop pass. Once the rail has moved, even by one raw step, re-delivery
+      // is forbidden: the normal travel budget owns it from here.
+      if (this->movement_observed_ ||
+          (this->in_flight_.origin_known && this->raw_position_ != this->in_flight_.origin)) {
+        ESP_LOGI(TAG, "[%s] Movement arrived before the early retry; not sending the position again", this->label_);
+        return;
+      }
+      if (!this->retry_position_())
+        ESP_LOGW(TAG, "[%s] Could not re-send the position early; leaving it to the travel budget", this->label_);
+      return;
+    }
+
+    // Runs alongside the verification below rather than instead of it: it must
+    // not consume the loop pass that the travel budget is counting on, and it
+    // deliberately leaves command_sent_at_ and command_budget_ untouched.
+    this->check_started_();
+
     switch (this->in_flight_.verification) {
       case Verification::ACKED:
         if (now - this->command_sent_at_ > this->command_budget_) {
@@ -774,8 +801,15 @@ void MotionblindsBLEMotor::dispatch_() {
 
   const int distance = std::abs(static_cast<int>(command.target) - static_cast<int>(this->raw_position_));
 
-  if (command.command == Command::PERCENT)
+  if (command.command == Command::PERCENT) {
     command.delivery_attempts++;
+    // Where the rail is standing as this write goes out. The early no-start
+    // check confirms against this and nothing else; without a known position
+    // there is no "did not start" to detect.
+    command.origin = this->raw_position_;
+    command.origin_known = this->has_position_;
+    command.origin_fresh = this->position_fresh_;
+  }
 
   if (!this->write_command_(command.command, command.argument)) {
     this->fail_("could not write command");
@@ -794,6 +828,7 @@ void MotionblindsBLEMotor::dispatch_() {
   this->settle_rechecked_ = false;
   this->position_retry_pending_ = false;
   this->recheck_attempts_ = 0;
+  this->reset_start_check_();
   this->last_activity_ = now;
 
   // A rail already standing on the requested position has nothing to report,
@@ -832,6 +867,53 @@ void MotionblindsBLEMotor::dispatch_() {
   this->publish_();
 }
 
+void MotionblindsBLEMotor::reset_start_check_() {
+  this->movement_observed_ = false;
+  this->awaiting_start_status_ = false;
+  this->start_retry_pending_ = false;
+  this->start_queries_ = 0;
+  this->start_origin_confirmations_ = 0;
+  this->start_query_at_ = 0;
+}
+
+void MotionblindsBLEMotor::check_started_() {
+  const uint32_t now = millis();
+
+  StartCheckInputs inputs;
+  inputs.settled_position =
+      this->in_flight_.command == Command::PERCENT && this->in_flight_.verification == Verification::SETTLED;
+  inputs.origin_known = this->in_flight_.origin_known;
+  inputs.movement_observed = this->movement_observed_;
+  // Once the post-travel recheck has taken over, that path owns the decision
+  // and this one must not answer the same frame a second time.
+  inputs.post_travel = this->settle_rechecked_;
+  inputs.verify_start_after = this->verify_start_after_;
+  inputs.since_write = now - this->command_sent_at_;
+  inputs.since_query = now - this->start_query_at_;
+  inputs.queries = this->start_queries_;
+
+  if (start_check_action(inputs) != StartCheckAction::QUERY)
+    return;
+
+  ESP_LOGI(TAG, "[%s] Still reported at %u %.1fs after the position write; asking whether it ever left (%u of %u)",
+           this->label_, static_cast<unsigned>(this->in_flight_.origin),
+           static_cast<double>(now - this->command_sent_at_) / 1000.0,
+           static_cast<unsigned>(this->start_queries_ + 1), static_cast<unsigned>(MAX_START_QUERIES));
+
+  this->start_queries_++;
+  this->start_query_at_ = now;
+  this->awaiting_start_status_ = true;
+
+  // Deliberately no failure handling. The question is written without a
+  // response, so a write that does not go out is indistinguishable from an
+  // answer that never comes, and neither is evidence about the rail. The travel
+  // budget still owns this command in full.
+  if (!this->write_command_(Command::STATUS_QUERY, 0)) {
+    ESP_LOGD(TAG, "[%s] Could not write the start-check query; the travel budget still stands", this->label_);
+    this->awaiting_start_status_ = false;
+  }
+}
+
 bool MotionblindsBLEMotor::retry_position_() {
   if (!this->command_in_flight_ || this->in_flight_.command != Command::PERCENT ||
       this->in_flight_.verification != Verification::SETTLED)
@@ -856,11 +938,17 @@ bool MotionblindsBLEMotor::retry_position_() {
     return false;
 
   this->in_flight_.delivery_attempts++;
+  // A re-delivered write is a new write: it starts from wherever the rail
+  // actually is now, and gets its own early check as well as its own budget.
+  this->in_flight_.origin = this->raw_position_;
+  this->in_flight_.origin_known = this->has_position_;
+  this->in_flight_.origin_fresh = this->position_fresh_;
   this->command_sent_at_ = now;
   this->command_budget_ = TRAVEL_TIMEOUT_BASE_MS + distance * TRAVEL_TIMEOUT_PER_PERCENT_MS;
   this->settle_matches_ = 0;
   this->settle_rechecked_ = false;
   this->recheck_attempts_ = 0;
+  this->reset_start_check_();
   this->last_activity_ = now;
   this->moving_ = true;
   this->travel_direction_ =
@@ -1083,6 +1171,19 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
       this->command_in_flight_ = false;
       this->finish_operation_();
     } else if (this->in_flight_.verification == Verification::SETTLED) {
+      // Movement is anything other than the position the write went out on. It
+      // is recorded before the arrival test below, because a rail that has
+      // reached its target has certainly left, and because a rail moved by a
+      // remote must stop the early check just as firmly as one obeying us.
+      if (this->in_flight_.origin_known && this->raw_position_ != this->in_flight_.origin) {
+        this->movement_observed_ = true;
+        this->start_retry_pending_ = false;
+      }
+      // One frame, one path. Once the post-travel recheck is running it owns
+      // every answer, including one still outstanding from the early check.
+      if (this->settle_rechecked_)
+        this->awaiting_start_status_ = false;
+
       if (this->raw_position_ == this->in_flight_.target) {
         // Two frames are normally required so a position the rail is merely
         // passing through cannot be mistaken for arrival. After the recheck
@@ -1096,6 +1197,7 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
           ESP_LOGI(TAG, "[%s] Reached %u", this->label_, static_cast<unsigned>(this->raw_position_));
           this->command_in_flight_ = false;
           this->position_retry_pending_ = false;
+          this->reset_start_check_();
           this->moving_ = false;
           this->travel_direction_ = 0;
           this->finish_operation_();
@@ -1115,6 +1217,39 @@ void MotionblindsBLEMotor::apply_notification_(const Notification &notification)
             this->position_retry_pending_ = true;
           } else if (action == PositionRecoveryAction::EXHAUSTED) {
             this->fail_("motor stayed away from the commanded position after retrying it");
+          }
+        } else if (notification.type == NotificationType::STATUS && this->awaiting_start_status_) {
+          // The answer to the early "did it ever leave" question. It decides on
+          // the reported position alone, and it has no failure branch: an
+          // exhausted early check is silence, not condemnation, and the full
+          // travel budget is still running underneath it.
+          this->awaiting_start_status_ = false;
+          const StartAnswerAction action =
+              start_answer_action(this->raw_position_, this->in_flight_.origin, this->in_flight_.target,
+                                  this->in_flight_.delivery_attempts, this->start_origin_confirmations_);
+          switch (action) {
+            case StartAnswerAction::CONFIRM:
+              this->start_origin_confirmations_++;
+              ESP_LOGI(TAG, "[%s] First status still reports the starting position %u; confirming once more",
+                       this->label_, static_cast<unsigned>(this->raw_position_));
+              break;
+            case StartAnswerAction::RETRY:
+              ESP_LOGW(TAG,
+                       "[%s] Status confirms %u, exactly where the command was sent from; the motor never started. "
+                       "Sending the absolute position again",
+                       this->label_, static_cast<unsigned>(this->raw_position_));
+              this->start_retry_pending_ = true;
+              break;
+            case StartAnswerAction::DONE:
+              ESP_LOGI(TAG, "[%s] Status confirms %u again and the deliveries are used up; leaving it to the "
+                            "travel budget",
+                       this->label_, static_cast<unsigned>(this->raw_position_));
+              break;
+            case StartAnswerAction::IGNORE:
+              ESP_LOGI(TAG, "[%s] Status reports %u, away from the %u it started at; the move is under way",
+                       this->label_, static_cast<unsigned>(this->raw_position_),
+                       static_cast<unsigned>(this->in_flight_.origin));
+              break;
           }
         }
       }
@@ -1171,6 +1306,7 @@ void MotionblindsBLEMotor::retry_connection_(const char *reason) {
   ESP_LOGW(TAG, "[%s] Connection was %s, dropping it to try a fresh one", this->label_, reason);
   this->command_in_flight_ = false;
   this->position_retry_pending_ = false;
+  this->reset_start_check_();
   this->command_handle_ = 0;
   this->notify_handle_ = 0;
   this->config_descriptor_handle_ = 0;
@@ -1188,6 +1324,7 @@ void MotionblindsBLEMotor::abort_() {
   this->travel_direction_ = 0;
   this->settle_matches_ = 0;
   this->position_retry_pending_ = false;
+  this->reset_start_check_();
   this->command_handle_ = 0;
   this->notify_handle_ = 0;
   this->config_descriptor_handle_ = 0;
@@ -1208,6 +1345,7 @@ void MotionblindsBLEMotor::on_disconnect_complete(esp_err_t reason) {
   ESP_LOGD(TAG, "[%s] Link torn down (reason %d)", this->label_, reason);
   this->command_in_flight_ = false;
   this->position_retry_pending_ = false;
+  this->reset_start_check_();
   this->moving_ = false;
   this->command_handle_ = 0;
   this->notify_handle_ = 0;

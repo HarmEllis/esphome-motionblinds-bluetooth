@@ -154,6 +154,123 @@ A rail took four seconds to move a few percent. Budgets of seven and eight
 seconds were declaring healthy moves failed. Being slow to give up costs a
 delayed error message; being quick to give up throws away a working command.
 
+### A translation keeps the gap between the rails constant, so a gap rule never fires
+
+The most consequential thing about the top-down bottom-up geometry, and the one
+that is genuinely not obvious from the code: when the two rails move the same
+physical direction by the same amount — sliding the fabric block down, which is
+what the fabric-position number does — **the distance between them does not
+change at any point during the move.**
+
+The first version of the collision rule released the second rail once the
+observed gap reached `start_gap`. Read that again against the sentence above: on
+a translation that condition can never become true if it was not already true at
+dispatch. The rule silently degraded into "the second rail waits out the whole of
+the first rail's travel", every single time, and nothing in the log said so — it
+looked like a safety wait doing its job.
+
+The fix is not a shorter wait. It is a different question: not *is there room
+yet* (there always was, the gap is constant) but *has the leading rail actually
+left*, so the second one is following it rather than driving into something
+stationary. One reported percent of the leading rail's own travel, in the
+gap-opening direction, from a position observed on the current link.
+
+The same reading disposes of the other half: when **both** rails open the gap —
+opening or closing a collapsed blind, the most common command there is — every
+intermediate state of both moves increases the distance between them, and
+overshoot can only increase it further. There was never anything to wait for
+there either.
+
+### Clamping a target against a live position needs a residual completion
+
+Found while making the second rail start earlier, but it was already there and
+already reachable on defaults. Every rail's target is clamped so it cannot be
+commanded past the other one. The reference used for that clamp was the other
+rail's **live position** — which is right for the rail that goes first, and
+wrong for the rail that follows, because the rail it is being held off is on its
+way somewhere else.
+
+Concretely, with `min_gap: 0%` and `safety_margin: 0%`: rails at 50 and 60,
+translate the pair 20% down. Targets 70 and 80. Clamping the top rail's 70
+against the bottom rail's live 60 yields **60**, not 70. Nothing re-issues the
+remainder, so the blind ends the move with the wrong length *and* the wrong
+centre, and reports success.
+
+Two things made it easy to miss. It only bites when both rails are in flight at
+once, which before this change happened only above `start_gap`. And the
+exhaustive geometry test clamped each rail against the other's **target** — so
+the test was modelling a different program from the one that shipped, and passed.
+
+Using the leading rail's committed target looks tempting, but is unsafe if that
+write is lost or the rail stalls: the follower would then be allowed to cross a
+rail which never vacated its old position. The follower is therefore held off
+the leading rail's latest **observed** position in every case except both rails
+moving apart, where every interleaving increases the gap. This can deliberately
+clip the follower's first command.
+
+A bounded residual-completion pass supplies the rest safely: what each rail was
+asked for is recorded alongside what it could actually be given, and if the two
+still differ by more than one reported quantum once everything has stopped, the
+remainder is issued once against the geometry as it now stands. Thus a stalled
+leader cannot be crossed, while a healthy translation still reaches the full
+requested position after at most one extra command per rail.
+
+### One reported percent is half a second to a second of travel
+
+The number that makes early release defensible. Rails move at roughly 1–2 %/s
+(the four-seconds-for-a-few-percent measurement above), and the motors report
+whole percents of their own travel, so the smallest movement that can be
+observed at all corresponds to about half a second to a second of travel. The
+clearance watchdog therefore reacts within roughly one percent of a breach —
+which is the quantitative basis for letting the second rail start on one percent
+of evidence rather than on the whole move.
+
+For a rail calibrated over only part of the window, one raw percent is
+correspondingly less window travel (0.4% on a rail spanning 40%). The floor that
+carries the safety in that case is the required clearance, not the step size.
+
+### The locally-set moving flag is a claim about us, not the rail
+
+`moving_` is set by this node the instant it hands a command to the radio. It is
+not feedback, and every decision that rested on it was really resting on "we
+sent something". Two of them mattered: the trailing rail's release, and the
+"leading rail has settled" test — the latter because the flag is also cleared
+when a link drops, so a connection lost mid-move made a stale position within
+1% of target read as "the lead is done", exactly when the coordinator had lost
+its eyes.
+
+What replaced it: an explicit "the position write has gone out" accessor for
+attributing feedback to our own command, `busy()` plus a *freshly observed*
+position on target for settlement, and observed movement for departure.
+
+### A lost position write costs half a minute before anything is retried
+
+Given that writes are unacknowledged and do get lost (above), it is worth
+writing down what the failure actually costs. On a 20% move: 8 s base plus 700 ms
+per percent of travel = 22 s of travel budget, then up to three status rechecks
+five seconds apart, then one re-delivery. A command that never reached the motor
+therefore sits there for roughly half a minute looking like a slow blind.
+
+A rail that has not been reported at *any* other position a few seconds after
+the write is a far earlier signal — but it is not proof, because a healthy motor
+can still be inside its first reported percent, and a re-send landing on a moving
+rail is precisely the "commands in quick succession get ignored" fault above.
+So the early check asks rather than concludes: it seeks two matching status
+answers with queries two seconds apart, and has one third query as loss reserve.
+A re-send happens only when **two** answers name the exact position the command
+was sent from. Three seconds is the floor because that is the
+minimum spacing between any two commands to one motor; five is the default for
+the first question because of the four-second observation above. The normal
+retry therefore happens at roughly seven seconds.
+
+Two properties make it safe to run by default. A wrong starting position — a
+restored one that no longer holds — can only make the answer *differ* from it,
+so it costs a missed retry and never a false one. And the early path has no
+failing outcome at all: running out of questions is silence, not condemnation,
+and only the post-travel path may fail a move. Both paths share the same
+two-delivery budget, so an early retry consumes the only re-delivery and can
+never be followed by a third position write later.
+
 ### Battery readings are noisy
 
 One motor reported 54, 43 and 51 percent within three minutes. Never conclude

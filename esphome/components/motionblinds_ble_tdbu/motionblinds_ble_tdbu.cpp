@@ -40,7 +40,8 @@ const char *MotionblindsBLETdbu::status_text() const {
     case Phase::REFRESHING:
       return "checking where both rails are";
     case Phase::LEADING:
-      return "moving the first rail clear";
+      return this->wait_ == Wait::DEPARTURE ? "waiting for the first rail to move off"
+                                            : "moving the first rail clear";
     case Phase::TRAILING:
       return "moving";
     case Phase::IDLE:
@@ -56,13 +57,14 @@ void MotionblindsBLETdbu::dump_config() {
                 "  Minimum gap: %.0f%%\n"
                 "  Safety margin: %.0f%%\n"
                 "  Start gap: %.0f%%\n"
+                "  Direction aware: %s\n"
                 "  Preconnect trailing rail: %s\n"
                 "  Prepare timeout: %us\n"
                 "  Reachable segment: %.0f%% - %.0f%%",
                 this->fabric_ == Fabric::BETWEEN_RAILS ? "between rails" : "outside in", this->min_gap_,
-                this->safety_margin_, this->start_gap_, YESNO(this->preconnect_trailing_),
-                static_cast<unsigned>(this->prepare_timeout_ / 1000), this->geometry_.min_length(),
-                this->geometry_.max_length());
+                this->safety_margin_, this->start_gap_, YESNO(this->direction_aware_),
+                YESNO(this->preconnect_trailing_), static_cast<unsigned>(this->prepare_timeout_ / 1000),
+                this->geometry_.min_length(), this->geometry_.max_length());
 }
 
 // ------------------------------------------------------------------ state
@@ -323,50 +325,76 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
   const Direction top_direction = Geometry::classify(Rail::TOP, top, target_top);
   const Direction bottom_direction = Geometry::classify(Rail::BOTTOM, bottom, target_bottom);
 
-  if (top_direction == Direction::STATIONARY && bottom_direction == Direction::STATIONARY) {
+  DispatchRequest request;
+  request.top = top_direction;
+  request.bottom = bottom_direction;
+  request.gap = bottom - top;
+  request.start_gap = this->start_gap_;
+  request.direction_aware = this->direction_aware_;
+  request.speeds_known_different = this->speeds_known_different_();
+
+  const DispatchPlan plan = plan_dispatch(request);
+
+  if (!plan.moves) {
     ESP_LOGD(TAG, "Already there");
     this->finish_();
     return;
   }
 
-  // Which rail leads is decided by what each one does to the gap: the rail that
-  // opens it goes first. Whether the second has to wait is a separate question,
-  // decided by how much room there is *right now* — two rails far apart can
-  // start together even when one is closing on the other, while two rails
-  // almost touching must not start together in any direction.
-  const float gap = bottom - top;
-  const bool roomy = gap >= this->start_gap_;
+  this->lead_ = plan.lead;
+  this->trail_ = plan.trail;
+  this->has_trail_ = plan.has_trail;
+  this->lead_target_ = plan.lead == Rail::TOP ? target_top : target_bottom;
+  this->trail_target_ = plan.lead == Rail::TOP ? target_bottom : target_top;
+  MotionblindsBLEMotor *lead_motor = this->motor_(plan.lead);
+  if (lead_motor == nullptr) {
+    this->abandon_("the leading rail is not configured");
+    return;
+  }
+  this->departure_step_ = rail_quantum(lead_motor->rail_range());
+  this->commanded_[0] = RailCommand{};
+  this->commanded_[1] = RailCommand{};
 
-  if (top_direction == Direction::STATIONARY) {
-    this->lead_ = Rail::BOTTOM;
-    this->lead_target_ = target_bottom;
-    this->has_trail_ = false;
-    this->wait_ = Wait::NONE;
-  } else if (bottom_direction == Direction::STATIONARY) {
-    this->lead_ = Rail::TOP;
-    this->lead_target_ = target_top;
-    this->has_trail_ = false;
-    this->wait_ = Wait::NONE;
-  } else {
-    // Both rails move. The one whose travel opens the gap leads; if neither
-    // does (both closing in) the top rail leads by convention, and the wait
-    // below is what keeps them apart.
-    const bool top_leads = top_direction == Direction::AWAY || bottom_direction != Direction::AWAY;
-    this->lead_ = top_leads ? Rail::TOP : Rail::BOTTOM;
-    this->trail_ = top_leads ? Rail::BOTTOM : Rail::TOP;
-    this->lead_target_ = top_leads ? target_top : target_bottom;
-    this->trail_target_ = top_leads ? target_bottom : target_top;
-    this->has_trail_ = true;
-    this->wait_ = roomy ? Wait::NONE : Wait::CLEARANCE;
+  switch (plan.rule) {
+    case StartRule::TOGETHER:
+      this->wait_ = Wait::NONE;
+      break;
+    case StartRule::AFTER_DEPARTURE:
+      this->wait_ = Wait::DEPARTURE;
+      break;
+    case StartRule::AFTER_CLEARANCE:
+      this->wait_ = Wait::CLEARANCE;
+      break;
   }
 
-  if (!this->command_(this->lead_, this->lead_target_)) {
+  if (plan.has_trail && plan.rule != StartRule::TOGETHER) {
+    // Worth an INFO line: this is the difference between a move that feels
+    // immediate and one that waits out a whole rail's travel, and which of the
+    // two happened is otherwise invisible from Home Assistant.
+    if (plan.same_direction && plan.rule == StartRule::AFTER_CLEARANCE && this->direction_aware_)
+      ESP_LOGI(TAG, "Both rails travel the same way but their speed settings differ; keeping the conservative wait");
+    ESP_LOGD(TAG, "%s rail leads; the %s rail waits for %s", plan.lead == Rail::TOP ? "Top" : "Bottom",
+             plan.trail == Rail::TOP ? "top" : "bottom",
+             plan.rule == StartRule::AFTER_DEPARTURE ? "it to move off" : "clearance");
+  }
+
+  // The rail that goes first is held off where the other one is standing: it is
+  // the only reference that exists yet.
+  if (!this->command_(this->lead_, this->lead_target_, this->position_(this->trail_))) {
     this->abandon_("the first rail did not accept its command");
     return;
   }
 
   if (this->has_trail_ && this->wait_ == Wait::NONE) {
-    if (!this->command_(this->trail_, this->trail_target_)) {
+    // The clamp reference for the follower depends on the geometry. Clamping
+    // against the live position can temporarily truncate a simultaneous
+    // translation, so the bounded residual pass below re-issues the remainder.
+    // A committed target is a safe clamp reference only when both rails move
+    // away and the gap therefore cannot shrink. In every other simultaneous
+    // case use the observed position and let the bounded residual pass finish
+    // any temporary truncation after the lead has actually arrived.
+    const float trail_reference = plan.both_away ? this->lead_committed_ : this->position_(this->lead_);
+    if (!this->command_(this->trail_, this->trail_target_, trail_reference)) {
       this->abandon_("the second rail did not accept its command");
       return;
     }
@@ -377,16 +405,37 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
   this->phase_since_ = millis();
 }
 
-bool MotionblindsBLETdbu::command_(Rail rail, float window_target) {
+bool MotionblindsBLETdbu::speeds_known_different_() const {
+  if (this->top_ == nullptr || this->bottom_ == nullptr)
+    return false;
+  const auto top_speed = this->top_->speed();
+  const auto bottom_speed = this->bottom_->speed();
+  // Unknown is not "different". Most motors never report a speed at all, and
+  // refusing the fast path on missing information would mean never taking it.
+  if (!top_speed.has_value() || !bottom_speed.has_value())
+    return false;
+  return *top_speed != *bottom_speed;
+}
+
+bool MotionblindsBLETdbu::command_(Rail rail, float window_target, float other_reference) {
   MotionblindsBLEMotor *motor = this->motor_(rail);
   if (motor == nullptr)
     return false;
 
+  // Without a reference there is nothing to keep the target clear of, and an
+  // unclamped absolute position is exactly what this class exists to prevent.
+  // Unreachable from the planner, which requires both positions first; refused
+  // rather than trusted, because the failure would be a collision.
+  if (std::isnan(other_reference) || std::isnan(window_target)) {
+    ESP_LOGE(TAG, "Refusing to command the %s rail: the other rail's position is unknown",
+             rail == Rail::TOP ? "top" : "bottom");
+    return false;
+  }
+
   // Only a rail that is actually being commanded needs its connection held.
   this->acquire_lease_(rail);
 
-  const Rail other = rail == Rail::TOP ? Rail::BOTTOM : Rail::TOP;
-  const uint8_t raw = this->geometry_.raw_target(rail, window_target, this->position_(other));
+  const uint8_t raw = this->geometry_.raw_target(rail, window_target, other_reference);
   const float achieved = motor->rail_range().to_window(static_cast<float>(raw));
 
   // Deliberately INFO: what was actually asked of a motor is the first thing
@@ -394,20 +443,76 @@ bool MotionblindsBLETdbu::command_(Rail rail, float window_target) {
   // Home Assistant log.
   ESP_LOGI(TAG, "Commanding %s rail to %.1f%% of the window (raw %u)", rail == Rail::TOP ? "top" : "bottom", achieved,
            static_cast<unsigned>(raw));
-  return motor->request_position(achieved, this->current_request_at_);
+  if (!motor->request_position(achieved, this->current_request_at_))
+    return false;
+
+  RailCommand &record = this->commanded_[rail == Rail::TOP ? 0 : 1];
+  record.active = true;
+  record.intended = window_target;
+  record.achieved = achieved;
+
+  if (rail == this->lead_) {
+    this->lead_committed_ = achieved;
+    this->lead_command_at_ = millis();
+    // The baseline for departure proof, sampled where the lead was when its
+    // command was accepted. Only an observed position may serve as proof; a
+    // remembered one is re-baselined on the first real frame instead.
+    this->lead_reference_ = this->position_(rail);
+    this->lead_reference_fresh_ = this->fresh_(rail);
+  }
+  return true;
+}
+
+bool MotionblindsBLETdbu::departure_proven_() const {
+  MotionblindsBLEMotor *lead = this->motor_(this->lead_);
+  if (lead == nullptr)
+    return false;
+
+  DepartureEvidence evidence;
+  evidence.lead = this->lead_;
+  evidence.lead_fresh = this->fresh_(this->lead_);
+  uint8_t raw_origin = 0;
+  bool origin_fresh = false;
+  const bool origin_known = lead->command_origin(raw_origin, origin_fresh);
+  evidence.baseline_fresh = origin_known && origin_fresh;
+  // A completed write, not a locally-set moving flag. The flag is set by this
+  // node the moment it hands a command to the radio and says nothing about the
+  // rail; this says the absolute position actually went out, which is what
+  // makes subsequent feedback attributable to our own command.
+  evidence.write_sent = lead->position_write_sent();
+  // Prefer the position captured when the BLE write actually went out. The
+  // coordinator may have queued it seconds earlier, during which a remote can
+  // move the rail. Optimistic mode deliberately has no fresh write origin; its
+  // first real frame is re-baselined below and used on the next frame instead.
+  evidence.baseline = evidence.baseline_fresh
+                          ? lead->rail_range().to_window(static_cast<float>(raw_origin))
+                          : this->lead_reference_;
+  if (!evidence.baseline_fresh && this->lead_reference_fresh_ && !std::isnan(this->lead_reference_))
+    evidence.baseline_fresh = true;
+  evidence.now = this->position_(this->lead_);
+  evidence.quantum = this->departure_step_;
+  evidence.gap = this->position_(Rail::BOTTOM) - this->position_(Rail::TOP);
+  evidence.effective_gap = this->geometry_.effective_gap();
+  return departure_proven(evidence);
 }
 
 void MotionblindsBLETdbu::advance_() {
   if (this->phase_ != Phase::LEADING || !this->has_trail_)
     return;
 
-  // Do not let the tracker choose the trailing rail first: that would delay
-  // the first physical movement. Once feedback proves the leader is moving,
-  // however, the second connection can be opened and keyed in parallel with
-  // the clearance move. No position command is sent here.
+  // Do not let the tracker choose the trailing rail first: that would delay the
+  // first physical movement, since it connects one client at a time. Once the
+  // leading rail's command has actually gone out, the second connection can be
+  // opened and keyed in parallel with the clearance move. No position command is
+  // sent here.
+  //
+  // Gated on the write having left rather than on the lead's is_moving() flag.
+  // The two become true at the same instant, so nothing is delayed by the
+  // change; what it removes is a decision resting on a flag this node sets
+  // about its own intent.
   const bool trailing_lease_held = this->trail_ == Rail::TOP ? this->leased_top_ : this->leased_bottom_;
-  if (this->preconnect_trailing_ && !trailing_lease_held && this->motor_(this->lead_)->is_moving()) {
-    ESP_LOGI(TAG, "First rail is moving; preconnecting the second rail while clearance opens");
+  if (this->preconnect_trailing_ && !trailing_lease_held && this->motor_(this->lead_)->position_write_sent()) {
+    ESP_LOGI(TAG, "First rail's command has gone out; preconnecting the second rail while clearance opens");
     this->acquire_lease_(this->trail_);
   }
 
@@ -415,29 +520,109 @@ void MotionblindsBLETdbu::advance_() {
   if (std::isnan(lead_position))
     return;
 
-  // Start the second rail once the leading one has actually opened the gap up,
-  // not once it has finished. They are allowed to travel together; what they
-  // must not do is set off together while they are close.
+  // A baseline that was only remembered is replaced by the first observation,
+  // and that observation is never itself counted as movement: a remembered
+  // position that turns out to be wrong looks exactly like a rail departing.
+  if (!this->lead_reference_fresh_ && this->fresh_(this->lead_)) {
+    ESP_LOGD(TAG, "First observation of the leading rail at %.1f%%; using it as the departure baseline",
+             lead_position);
+    this->lead_reference_ = lead_position;
+    this->lead_reference_fresh_ = true;
+  }
+
   const float gap = this->position_(Rail::BOTTOM) - this->position_(Rail::TOP);
-  const bool settled = !this->motor_(this->lead_)->is_moving() &&
-                       std::fabs(lead_position - this->lead_target_) <= 1.0f;
-  if (gap < this->start_gap_ && !settled)
+
+  // The leading rail is done, whichever wait is in force. Deliberately built on
+  // the motor having no outstanding work plus a freshly observed position on
+  // target: !is_moving() alone is true whenever a link drops mid-move, which is
+  // exactly when the coordinator has lost its eyes.
+  const bool settled = this->fresh_(this->lead_) && !this->motor_(this->lead_)->busy() &&
+                       std::fabs(lead_position - this->lead_committed_) <= 1.0f;
+
+  bool release = settled;
+  const char *why = "has finished";
+  if (!release && this->wait_ == Wait::DEPARTURE) {
+    release = this->departure_proven_();
+    why = "has moved off";
+  } else if (!release && gap >= this->start_gap_) {
+    release = true;
+    why = "has opened the gap";
+  }
+  if (!release)
     return;
 
-  ESP_LOGI(TAG, "First rail has opened a %.0f%% gap, starting the second", gap);
-  if (!this->command_(this->trail_, this->trail_target_)) {
+  // The evidence, at INFO, because the next field note about this depends on
+  // being able to read the numbers the decision was actually made on.
+  ESP_LOGI(TAG, "%s rail %s: observed at %.1f%% (was %.1f%%) after %.1fs, gap %.1f%%; starting the %s rail",
+           this->lead_ == Rail::TOP ? "Top" : "Bottom", why, lead_position,
+           std::isnan(this->lead_reference_) ? lead_position : this->lead_reference_,
+           static_cast<double>(millis() - this->lead_command_at_) / 1000.0, gap,
+           this->trail_ == Rail::TOP ? "top" : "bottom");
+
+  // Held off the leading rail's observed position. Departure proves that it
+  // left, not that it will reach its unacknowledged target; using that target
+  // here would let a follower cross a lead whose write was lost or which
+  // stalled immediately afterwards. Any temporary truncation is completed by
+  // the bounded residual pass once both rails have settled.
+  if (!this->command_(this->trail_, this->trail_target_, lead_position)) {
     this->abandon_("the second rail did not accept its command");
     return;
   }
   this->has_trail_ = false;
+  this->wait_ = Wait::NONE;
   this->phase_ = Phase::TRAILING;
   this->phase_since_ = millis();
+}
+
+MotionblindsBLETdbu::ResidualResult MotionblindsBLETdbu::complete_residual_() {
+  // The safety net behind the clamping rule above. A target can still come out
+  // short of what was asked -- the leading rail was itself clamped, or stopped,
+  // or its own range ran out -- and nothing else would ever issue the rest of
+  // it, leaving the blind at the wrong length and the wrong centre for good.
+  if (!this->fresh_(Rail::TOP) || !this->fresh_(Rail::BOTTOM))
+    return ResidualResult::NONE;  // never move on a remembered position
+
+  for (const Rail rail : {Rail::TOP, Rail::BOTTOM}) {
+    RailCommand &record = this->commanded_[rail == Rail::TOP ? 0 : 1];
+    if (!record.active || record.residual_attempted)
+      continue;
+    const float quantum = rail_quantum(this->motor_(rail)->rail_range());
+    const float shortfall = std::fabs(record.intended - record.achieved);
+    if (quantum <= 0.0f || shortfall <= quantum)
+      continue;
+
+    // Recomputed against where the other rail has actually ended up, so this
+    // only ever asks for what the geometry now genuinely allows.
+    const Rail other = rail == Rail::TOP ? Rail::BOTTOM : Rail::TOP;
+    const uint8_t raw = this->geometry_.raw_target(rail, record.intended, this->position_(other));
+    const float achievable = this->motor_(rail)->rail_range().to_window(static_cast<float>(raw));
+    if (std::fabs(achievable - record.achieved) <= quantum)
+      continue;  // no closer than what was already commanded
+
+    record.residual_attempted = true;
+    if (!this->motor_(rail)->request_position(achievable, this->current_request_at_)) {
+      ESP_LOGE(TAG, "%s rail still needed %.1f%% but did not accept the residual command",
+               rail == Rail::TOP ? "Top" : "Bottom", achievable);
+      return ResidualResult::FAILED;
+    }
+    ESP_LOGI(TAG, "%s rail was cut short at %.1f%% of the %.1f%% asked for; finishing at %.1f%%",
+             rail == Rail::TOP ? "Top" : "Bottom", record.achieved, record.intended, achievable);
+    record.achieved = achievable;
+    return ResidualResult::STARTED;
+  }
+  return ResidualResult::NONE;
 }
 
 void MotionblindsBLETdbu::finish_() {
   this->phase_ = Phase::IDLE;
   this->has_trail_ = false;
   this->wait_ = Wait::NONE;
+  this->lead_reference_ = NAN;
+  this->lead_reference_fresh_ = false;
+  this->lead_command_at_ = 0;
+  this->lead_committed_ = 0.0f;
+  this->commanded_[0] = RailCommand{};
+  this->commanded_[1] = RailCommand{};
   this->operation_since_ = 0;
   this->current_request_at_ = 0;
   this->prepared_ = false;
@@ -548,15 +733,29 @@ void MotionblindsBLETdbu::loop() {
     case Phase::LEADING:
       this->advance_();
       if (this->phase_ == Phase::LEADING && now - this->phase_since_ > this->clearance_timeout_)
-        this->abandon_("the first rail never made room");
+        this->abandon_(this->wait_ == Wait::DEPARTURE ? "the first rail never started moving"
+                                                     : "the first rail never made room");
       break;
 
     case Phase::TRAILING:
       // Wait on the motors, not on is_moving(): that reports this phase too,
       // so the condition could never come true and every move would run until
       // the lease expired.
-      if (!this->motors_busy_())
+      if (!this->motors_busy_()) {
+        // One last chance to deliver a target the geometry had to cut short
+        // while the other rail was still in the way. Bounded to a single extra
+        // command, and it keeps the phase open until that command resolves.
+        const ResidualResult residual = this->complete_residual_();
+        if (residual == ResidualResult::STARTED) {
+          this->phase_since_ = now;
+          break;
+        }
+        if (residual == ResidualResult::FAILED) {
+          this->abandon_("a rail did not accept its residual position command");
+          break;
+        }
         this->finish_();
+      }
       break;
 
     default:

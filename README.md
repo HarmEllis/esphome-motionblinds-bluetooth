@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta2
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta3
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta2
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.28-beta3
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -160,6 +160,7 @@ One entry per motor. A top-down bottom-up blind has two.
 | `invert` | no | `false` | The motor is mounted upside down, so its positions run the other way through the window. |
 | `window_min` / `window_max` | no | `0` / `100` | The part of the window this rail actually travels. Needed when the two motors of one blind are each calibrated over their own half. |
 | `fast_connect` | no | `false` | Send waiting work as soon as the motor is keyed, instead of asking where the rail is first. See [Making it fast](#skip-the-status-query-when-there-is-already-work-to-do). |
+| `verify_start_after` | no | `5s` | How long after a position write to check that the rail left its starting position at all. A lost write is otherwise silent for the whole travel budget. Minimum `3s`; `0s` disables the check. Nothing is ever concluded from silence — see [Catch a write that never arrived](#catch-a-write-that-never-arrived). |
 | `low_latency_connection` | no | `true` | Prefer an 8.75–11.25 ms BLE connection interval during GATT setup and the handshake. Disable only if a motor proves incompatible. Independent of `fast_connect`. |
 | `cached_connect` | no | `true` | Reuse the learned address and address type so the controller can wait directly for the motor's next advertisement. Stored across restarts when `high_duty_cycle_connect` is enabled; a failed shortcut automatically returns to normal discovery. |
 | `high_duty_cycle_connect` | no | `true` | Use ESP-IDF's cancellable enhanced-open path and listen during 100% instead of 50% of the initiator scan interval. This raises ESP radio use only while establishing a connection, not the blind's connected time. |
@@ -203,6 +204,7 @@ same geometry — the rails delimit a segment, and only its meaning differs:
 | `min_gap` | no | `0%` | How close the rails may be commanded. Zero by default: on most of these blinds the rails stack against each other at either end, and the motors stop themselves if they meet. Raise it only for a blind whose rails genuinely cannot come together. |
 | `safety_margin` | no | `0%` | Added on top of `min_gap` when computing targets, for whole-numbered feedback and motor overshoot. |
 | `start_gap` | no | `10%` | Observed gap below which two rails may not be *set off* at the same moment. They may travel together; starting together while they are close is what drives them into each other. |
+| `direction_aware` | no | `true` | Let the start rule take each rail's direction of travel into account, instead of looking only at the gap. This is what makes opening and closing a collapsed blind, and sliding the fabric block, respond immediately — see [Start both rails when the geometry allows it](#start-both-rails-when-the-geometry-allows-it). Set it to `false` to go back to the gap-only rule. |
 | `clearance_timeout` | no | `60s` | How long the second rail waits for the first to make room. |
 | `lease_timeout` | no | `180s` | Upper bound on holding both connections open. |
 | `diagnostics` | no | | Builds the per-rail diagnostic entities; see below. |
@@ -359,11 +361,28 @@ the right order. Five rules:
    retreating a rail to its own far end — are exempt, which is what keeps a
    blind recoverable after a restart. **`optimistic: true` deliberately waives
    this rule**; the other four still hold.
-2. **The rail that opens the gap goes first**, and the second starts only once
-   the first has *observably* opened the gap past `start_gap`. A completed write
-   is not observation. When the rails already have more than `start_gap` between
-   them, both start together — they are allowed to travel at the same time; what
-   they must not do is set off together while they are close.
+2. **The rail that opens the gap goes first**, and when the rails start out
+   closer than `start_gap` the second one waits for *observed* evidence that it
+   is safe to follow. A completed write is not observation, and neither is this
+   node's own "moving" flag: both say only that a command was sent. What counts
+   as evidence depends on which way the rails are going, because that is what
+   decides whether waiting buys anything at all:
+
+   | Both rails | Physically | The second rail starts |
+   | --- | --- | --- |
+   | opening the gap | diverging | **immediately**, whatever `start_gap` says — every instant of both moves increases the gap |
+   | one each way | a translation, the gap constant | once the leading rail is **observed to have moved at least one reported percent** in the gap-opening direction, and the clearance floor is met |
+   | closing the gap | converging | once the observed gap passes `start_gap`, or the leading rail has finished |
+
+   When the rails already have more than `start_gap` between them, both start
+   together in every case — they are allowed to travel at the same time; what
+   they must not do is set off together while they are close. Set
+   `direction_aware: false` to fall back to the gap-only rule everywhere.
+   Except when both rails move apart, the follower is initially clipped against
+   the leader's latest observed position. If that cannot yet accommodate the
+   full target, one bounded residual command finishes it after the leader has
+   arrived. A lost or stalled leading write can therefore never make the early
+   follower cross it.
 3. **Targets never cross.** A rail is clamped so it cannot be commanded past the
    other one, plus `min_gap` and `safety_margin` where a blind needs them.
 4. **A failure stops the move.** If the first rail does not accept its command,
@@ -400,6 +419,106 @@ Every position write also reports the end-to-end queue time:
 That is the number to compare while testing this pre-release. It includes
 advertisement discovery, connection setup, keying and any safety wait, but not
 the rail's mechanical reaction after the write.
+
+### Start both rails when the geometry allows it
+
+On a top-down bottom-up blind the two rails are commanded one at a time whenever
+they start out closer than `start_gap`, and until now the second one waited for
+the observed gap to grow. For half the moves a blind actually gets, that wait
+was pure loss:
+
+* **Opening or closing a collapsed blind.** Both rails move apart. The gap can
+  only grow, from the first millimetre onwards, so there was never anything to
+  wait for. Both rails now start together regardless of `start_gap`.
+* **Sliding the fabric block** (the fabric-position number, or any move that
+  keeps the length and changes the centre). Both rails travel the same way by
+  the same amount, so **the gap never changes at all** — and a rule that waits
+  for the gap to grow therefore waited out the leading rail's *entire* travel,
+  every time. The second rail now goes as soon as the first is observed to have
+  moved off, typically within a second.
+
+The evidence for that release is logged, because it is the number to check if a
+blind ever looks like it started the second rail too early:
+
+```
+[living_blind] Bottom rail has moved off: observed at 61.0% (was 60.0%) after
+1.2s, gap 10.0%; starting the top rail
+```
+
+Four things must all hold before the second rail is released early, and each is
+there for a reason a field log produced:
+
+1. the leading rail's position was **observed on the current link**, not remembered;
+2. so was the baseline it is compared against — otherwise a wrong remembered
+   position looks exactly like a rail departing;
+3. the leading rail's own position write has **actually gone out**, so a remote
+   nudging it while our command is still queued cannot be read as our command
+   taking effect;
+4. movement of **at least one reported percent of that rail's own travel, in the
+   gap-opening direction**. Movement the other way is never proof, however large.
+
+Two rails whose motors report **different `speed` settings** are excluded: a
+follower on HIGH chasing a leader on LOW closes the gap for the whole move, and
+no amount of departure proof can see that coming. Those fall back to the
+conservative rule and say so in the log. Rails converging on each other keep the
+conservative rule unconditionally.
+
+The watchdog runs throughout either way. At the 1–2 %/s these rails travel, one
+reported percent is half a second to a second of travel, so it can react within
+about one percent of a breach.
+
+If a blind of yours misbehaves under this, `direction_aware: false` restores the
+previous rule exactly, without downgrading.
+
+### Catch a write that never arrived
+
+Position commands are written without a response, so a lost write is completely
+silent (see the [field notes](docs/field-notes.md)). The travel budget does
+notice — eventually. On a 20% move it allows 8 s plus 700 ms per percent, then up
+to three status rechecks five seconds apart, then one re-delivery: about half a
+minute before anything is tried again.
+
+`verify_start_after` (default `5s`) adds a much earlier and much narrower check:
+if the rail has not been reported at any position other than the one it started
+on, seek two matching answers, with queries two seconds apart. There are three
+query attempts, so one lost question or answer does not disable the check. The
+absolute position is only re-sent if two explicit answers still name the exact
+starting position.
+
+```
+[living_top] Still reported at 30 5.0s after the position write; asking whether
+it ever left (1 of 3)
+[living_top] First status still reports the starting position 30; confirming
+once more
+[living_top] Still reported at 30 7.0s after the position write; asking whether
+it ever left (2 of 3)
+[living_top] Status confirms 30, exactly where the command was sent from; the
+motor never started. Sending the absolute position again
+```
+
+What it deliberately does **not** do:
+
+* it never acts on silence. No answer means no conclusion; the travel budget
+  runs on untouched.
+* it never re-sends to a motor that has moved. A motor that is under way is
+  doing what it was told, and a second command landing on a moving rail is the
+  exact fault that makes these blinds do nothing at all.
+* it never fails a move. An early check that runs out of questions goes quiet;
+  only the post-travel path may declare a move failed.
+* it never shortens the travel budget. `command_sent_at` and the budget derived
+  from it are left exactly as they were.
+* it shares the existing two-delivery limit with the post-travel recovery. An
+  early re-send consumes the one retry; the later path never adds a third
+  position write.
+
+The floor is `3s`, which is the same minimum spacing every pair of commands to
+one motor gets, and a value below it is rejected rather than quietly raised.
+`0s` switches the check off.
+
+On a top-down bottom-up blind the two features work together: a lost write to
+the *leading* rail used to park the whole move in "waiting for clearance" for the
+full `clearance_timeout`. It is now re-sent after about seven seconds and the
+move completes.
 
 ### Prepare scheduled moves
 
@@ -731,8 +850,9 @@ What this component does differently:
 
 ## Development
 
-The frame format and the collision geometry have no ESPHome or Bluetooth
-dependencies, so both run as host tests:
+The frame format, the collision geometry, the rail start policy and the two
+command-recovery decisions have no ESPHome or Bluetooth dependencies, so all of
+them run as host tests:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -I esphome/components/motionblinds_ble \
@@ -742,6 +862,9 @@ g++ -std=c++17 -O2 -Wall -Wextra -I esphome/components/motionblinds_ble \
 
 g++ -std=c++17 -O2 -Wall -Wextra -I . -I esphome/components/motionblinds_ble_tdbu \
   test/tdbu_test.cpp -o tdbu_test && ./tdbu_test
+
+g++ -std=c++17 -O2 -Wall -Wextra -I esphome/components/motionblinds_ble \
+  test/recovery_test.cpp -o recovery_test && ./recovery_test
 ```
 
 The frame tests run against golden vectors produced by the reference
@@ -749,7 +872,13 @@ The frame tests run against golden vectors produced by the reference
 the one known to drive these motors. The geometry test sweeps every reachable
 pair of rail positions against every request a user can make, in both fabrics,
 with inverted and partially calibrated rails, and asserts that no command it
-would emit can bring the rails closer than `min_gap`.
+would emit can bring the rails closer than `min_gap`. It additionally sweeps the
+start rule over every direction pair and every gap, asserts the departure proof
+truth table, and — because an early release means both rails are in flight at
+once — evaluates the invariant at the worst-case interleavings of their progress
+rather than only at the end. The recovery test covers both bounded recovery
+paths behind a position write: the post-travel one that may condemn a move, and
+the early no-start one that never may.
 
 CI additionally validates every fixture under `fixtures/` against a pinned
 minimum ESPHome version and the current release, checks that the deliberately
@@ -762,7 +891,16 @@ working configuration fails the build rather than wasting someone's evening.
 What the host suites do **not** cover is the connection and coordination state
 machines, which need ESPHome and a motor to exercise. Those have been run on
 hardware — six motors across two nodes — but they are not covered by an automated
-test, so treat changes there as needing a real blind.
+test, so treat changes there as needing a real blind. Three things in particular
+can only be confirmed on hardware, and are worth doing deliberately with the log
+lines named in [Making it fast](#making-it-fast):
+
+* the early release timing on a real translation (`has moved off`, with the two
+  measured positions and the elapsed time);
+* a deliberately dropped write to the leading rail (`asking whether it ever
+  left`, then either a re-send or the move continuing);
+* a pair of motors set to different `speed` levels, which must *not* take the
+  early release.
 
 ## Field notes
 

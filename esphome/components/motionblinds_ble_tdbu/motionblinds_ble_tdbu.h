@@ -4,10 +4,13 @@
 
 #ifdef USE_ESP32
 
+#include <cmath>
+
 #include "esphome/components/motionblinds_ble/motionblinds_ble.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 
+#include "motionblinds_tdbu_dispatch.h"
 #include "motionblinds_tdbu_geometry.h"
 
 namespace esphome::motionblinds_ble_tdbu {
@@ -47,6 +50,10 @@ class MotionblindsBLETdbu : public Component {
   void set_safety_margin(float margin) { this->safety_margin_ = margin; }
   /// Observed gap below which two rails may not be started at the same moment.
   void set_start_gap(float gap) { this->start_gap_ = gap; }
+  /// Let the start rule take the rails' direction of travel into account.
+  /// The escape hatch for a blind on which the early release misbehaves: false
+  /// restores the gap-only rule exactly. See motionblinds_tdbu_dispatch.h.
+  void set_direction_aware(bool enabled) { this->direction_aware_ = enabled; }
   /// Trust the remembered rail positions instead of re-reading them from both
   /// motors before every move. See the README: this trades correctness under a
   /// physical remote for a very large reduction in latency.
@@ -101,6 +108,7 @@ class MotionblindsBLETdbu : public Component {
   /// What the coordinator is waiting for before the trailing rail may start.
   enum class Wait : uint8_t {
     NONE,       ///< there is already room; both may run together
+    DEPARTURE,  ///< wait for observed proof that the leading rail has left
     CLEARANCE,  ///< wait until the leading rail has opened the gap up
   };
 
@@ -139,7 +147,24 @@ class MotionblindsBLETdbu : public Component {
   void submit_(const Intent &intent);
   void begin_();
   void plan_and_dispatch_();
-  bool command_(Rail rail, float window_target);
+  /// Send one rail to a window target.
+  ///
+  /// `other_reference` is the position the target is kept clear of, and it is
+  /// an explicit argument because the safe reference differs per phase. A
+  /// follower normally uses the other rail's observed position; only two rails
+  /// moving away may use the committed target because every interleaving then
+  /// increases the gap. A bounded residual command completes targets that had
+  /// to be clipped against an observed intermediate position.
+  bool command_(Rail rail, float window_target, float other_reference);
+  /// Whether both motors have reported a speed setting and the two differ. A
+  /// trailing rail travelling faster than the one it follows closes the gap for
+  /// the whole move, which no amount of departure proof can see coming.
+  bool speeds_known_different_() const;
+  bool departure_proven_() const;
+  enum class ResidualResult : uint8_t { NONE, STARTED, FAILED };
+  /// Re-issue rails whose commanded target had to be cut short, once the
+  /// geometry allows the rest of it. Bounded to one extra command per rail.
+  ResidualResult complete_residual_();
   void advance_();
   void finish_();
   void abandon_(const char *reason);
@@ -155,6 +180,7 @@ class MotionblindsBLETdbu : public Component {
   float min_gap_{0.0f};
   float safety_margin_{0.0f};
   float start_gap_{10.0f};
+  bool direction_aware_{true};
   bool optimistic_{false};
   bool preconnect_trailing_{true};
   uint32_t prepare_timeout_{120000};
@@ -189,6 +215,31 @@ class MotionblindsBLETdbu : public Component {
   float lead_target_{0.0f};
   float trail_target_{0.0f};
   Wait wait_{Wait::NONE};
+
+  /// Where the leading rail was when its command was accepted, and whether
+  /// that was an observation rather than a remembered position. A remembered
+  /// baseline that turns out to be wrong looks exactly like movement, so it is
+  /// re-baselined on the first real frame and never counted as proof.
+  float lead_reference_{NAN};
+  bool lead_reference_fresh_{false};
+  uint32_t lead_command_at_{0};
+  /// One raw step of the leading rail's own range: the smallest movement its
+  /// whole-numbered feedback can possibly show.
+  float departure_step_{1.0f};
+  /// What the leading rail was actually commanded to. Used to recognise a
+  /// settled lead and, only when both rails move away, as a safe clamp reference
+  /// for the second command.
+  float lead_committed_{0.0f};
+
+  /// What each rail was asked for against what it could be given, so a target
+  /// the geometry had to cut short can be finished off afterwards.
+  struct RailCommand {
+    bool active{false};
+    bool residual_attempted{false};
+    float intended{0.0f};
+    float achieved{0.0f};
+  };
+  RailCommand commanded_[2]{};
 
   CallbackManager<void()> update_callback_{};
 };
