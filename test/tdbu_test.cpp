@@ -154,6 +154,40 @@ void test_clamping() {
   check_close(geometry.clamp_target(Rail::TOP, 10.0f, 40.0f), 10.0f, "safe target untouched");
 }
 
+void test_rail_request_pairing_window() {
+  std::printf("rail request pairing window\n");
+  constexpr uint32_t window = 30;
+
+  check(!rail_request_ready(false, true, false, 0, window), "first top request waits for its pair");
+  check(!rail_request_ready(false, false, true, window - 1, window), "single bottom still waits inside window");
+  check(rail_request_ready(false, true, false, window, window), "single rail dispatches at window expiry");
+  check(rail_request_ready(false, true, true, 1, window), "paired rails dispatch without waiting out window");
+  check(rail_request_ready(true, false, false, 0, window), "combined request dispatches immediately");
+
+  // Regression for two rails stacked at the head: top-to-50 arrives first,
+  // bottom-to-20 second. Planning either request alone makes top stationary;
+  // planning the pair correctly chooses the gap-opening bottom as leader.
+  const Geometry geometry = full(Fabric::BETWEEN_RAILS, 0.0f, 0.0f);
+  const float top = 0.0f;
+  const float bottom = 0.0f;
+  const float target_top = geometry.rail_window_target(Rail::TOP, 0.50f);
+  const float target_bottom = geometry.rail_window_target(Rail::BOTTOM, 0.20f);
+  const Placement paired = geometry.place_segment(target_bottom - target_top, (target_top + target_bottom) / 2.0f);
+  check(paired.feasible, "TV schemer pair is geometrically feasible");
+  check_close(paired.top, 50.0f, "paired top keeps its requested target");
+  check_close(paired.bottom, 80.0f, "paired bottom keeps its requested target");
+
+  DispatchRequest request;
+  request.top = Geometry::classify(Rail::TOP, top, paired.top);
+  request.bottom = Geometry::classify(Rail::BOTTOM, bottom, paired.bottom);
+  request.gap = bottom - top;
+  request.start_gap = 10.0f;
+  const DispatchPlan plan = plan_dispatch(request);
+  check(plan.moves && plan.has_trail, "both rails remain part of the plan");
+  check(plan.lead == Rail::BOTTOM, "gap-opening bottom rail leads the stacked pair");
+  check(plan.rule == StartRule::AFTER_DEPARTURE, "top follows after observed bottom departure");
+}
+
 // Every raw command the component can emit, from every state, must leave the
 // rails at least min_gap apart.
 void test_exhaustive_invariant() {
@@ -572,6 +606,7 @@ int main() {
   test_placement_keeps_extremes_reachable();
   test_classification();
   test_clamping();
+  test_rail_request_pairing_window();
   test_extremes_are_reachable();
   test_rail_position_is_absolute();
   test_exhaustive_invariant();

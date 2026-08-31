@@ -135,8 +135,12 @@ void MotionblindsBLETdbu::set_rail_position(Rail rail, float position) {
   Intent intent;
   intent.active = true;
   intent.combined = false;
-  intent.rail = rail;
-  intent.length = position;  // resolved against live geometry at dispatch
+  intent.has_top = rail == Rail::TOP;
+  intent.has_bottom = rail == Rail::BOTTOM;
+  if (intent.has_top)
+    intent.top_position = position;
+  else
+    intent.bottom_position = position;
   this->submit_(intent);
 }
 
@@ -185,11 +189,35 @@ void MotionblindsBLETdbu::submit_(const Intent &intent) {
     }
   }
 
-  this->pending_ = intent;
-  this->pending_.generation = ++this->generation_;
-  this->pending_.submitted_at = millis();
+  const uint32_t now = millis();
 
-  if (this->phase_ == Phase::IDLE)
+  // Two direct rail entities describe one desired geometry but Home Assistant
+  // transports them as separate API calls. Preserve both when they overlap in
+  // the pending slot; otherwise the second call replaces the first before the
+  // coordinator can choose the rail that opens the gap.
+  if (!intent.combined && this->pending_.active && !this->pending_.combined) {
+    const bool already_paired = this->pending_.has_top && this->pending_.has_bottom;
+    if (intent.has_top) {
+      this->pending_.has_top = true;
+      this->pending_.top_position = intent.top_position;
+    }
+    if (intent.has_bottom) {
+      this->pending_.has_bottom = true;
+      this->pending_.bottom_position = intent.bottom_position;
+    }
+    this->pending_.generation = ++this->generation_;
+    if (!already_paired && this->pending_.has_top && this->pending_.has_bottom)
+      ESP_LOGI(TAG, "Combined top and bottom cover calls received %ums apart; planning them as one rail pair",
+               static_cast<unsigned>(now - this->pending_.submitted_at));
+  } else {
+    this->pending_ = intent;
+    this->pending_.generation = ++this->generation_;
+    this->pending_.submitted_at = now;
+  }
+
+  if (this->phase_ == Phase::IDLE &&
+      rail_request_ready(this->pending_.combined, this->pending_.has_top, this->pending_.has_bottom,
+                         now - this->pending_.submitted_at, RAIL_PAIR_WINDOW_MS))
     this->begin_();
 }
 
@@ -313,13 +341,28 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
                placement.length);
     target_top = placement.top;
     target_bottom = placement.bottom;
-  } else if (this->pending_.rail == Rail::TOP) {
+  } else if (this->pending_.has_top && this->pending_.has_bottom) {
+    // Resolve both absolute rail positions together. This is the path used by
+    // parallel HA cover actions and is what lets the dispatcher see that, for
+    // example, the bottom rail must leave before the top rail can follow it.
+    const float requested_top = this->geometry_.rail_window_target(Rail::TOP, this->pending_.top_position);
+    const float requested_bottom =
+        this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.bottom_position);
+    const Placement placement =
+        this->geometry_.place_segment(requested_bottom - requested_top, (requested_top + requested_bottom) / 2.0f);
+    if (!placement.feasible)
+      ESP_LOGW(TAG, "Requested rail pair is not reachable without crossing; using the nearest safe placement");
+    target_top = placement.top;
+    target_bottom = placement.bottom;
+  } else if (this->pending_.has_top) {
     // Clamp here rather than at dispatch, so the direction classification and
     // the clearance wait both reason about the target the rail will really be
     // given. A wait on an unreachable target would never be satisfied.
-    target_top = this->geometry_.clamp_target(Rail::TOP, this->geometry_.rail_window_target(Rail::TOP, this->pending_.length), bottom);
+    target_top = this->geometry_.clamp_target(
+        Rail::TOP, this->geometry_.rail_window_target(Rail::TOP, this->pending_.top_position), bottom);
   } else {
-    target_bottom = this->geometry_.clamp_target(Rail::BOTTOM, this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.length), top);
+    target_bottom = this->geometry_.clamp_target(
+        Rail::BOTTOM, this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.bottom_position), top);
   }
 
   const Direction top_direction = Geometry::classify(Rail::TOP, top, target_top);
@@ -696,7 +739,10 @@ void MotionblindsBLETdbu::on_motor_update_() {
 void MotionblindsBLETdbu::loop() {
   if (this->phase_ == Phase::IDLE) {
     if (this->pending_.active) {
-      this->begin_();
+      const uint32_t elapsed = millis() - this->pending_.submitted_at;
+      if (rail_request_ready(this->pending_.combined, this->pending_.has_top, this->pending_.has_bottom, elapsed,
+                             RAIL_PAIR_WINDOW_MS))
+        this->begin_();
     } else if (this->prepared_ && millis() - this->prepared_since_ > this->prepare_timeout_) {
       ESP_LOGI(TAG, "Prepared connection window expired; releasing both rails");
       this->prepared_ = false;

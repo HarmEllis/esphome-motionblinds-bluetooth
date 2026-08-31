@@ -68,6 +68,15 @@ struct DispatchRequest {
   bool speeds_known_different{false};
 };
 
+/// Whether a pending Home Assistant rail request contains enough context to
+/// dispatch. Separate top and bottom cover calls arrive as two API messages;
+/// holding the first one for a tiny window lets the coordinator plan the pair
+/// instead of safety-clamping the first rail against the other's old position.
+inline bool rail_request_ready(bool combined, bool has_top, bool has_bottom, uint32_t elapsed_ms,
+                               uint32_t pair_window_ms) {
+  return combined || (has_top && has_bottom) || elapsed_ms >= pair_window_ms;
+}
+
 inline DispatchPlan plan_dispatch(const DispatchRequest &request) {
   DispatchPlan plan;
 

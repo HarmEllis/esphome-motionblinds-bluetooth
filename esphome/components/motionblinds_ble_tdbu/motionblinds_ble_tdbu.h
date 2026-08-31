@@ -127,7 +127,10 @@ class MotionblindsBLETdbu : public Component {
   struct Intent {
     bool active{false};
     bool combined{false};
-    Rail rail{Rail::TOP};
+    bool has_top{false};
+    bool has_bottom{false};
+    float top_position{0.0f};  ///< requested Home Assistant cover position
+    float bottom_position{0.0f};
     float length{0.0f};  ///< desired distance between the rails
     float centre{0.0f};  ///< desired midpoint between the rails
     bool has_length{false};
@@ -183,6 +186,10 @@ class MotionblindsBLETdbu : public Component {
   bool direction_aware_{true};
   bool optimistic_{false};
   bool preconnect_trailing_{true};
+  /// HA emits two cover actions as separate API messages. This delay is far
+  /// below BLE connection time but long enough to combine those messages into
+  /// one collision-aware plan. A genuinely single-rail command pays 30 ms.
+  static constexpr uint32_t RAIL_PAIR_WINDOW_MS = 30;
   uint32_t prepare_timeout_{120000};
   uint32_t clearance_timeout_{60000};
   uint32_t lease_timeout_{180000};

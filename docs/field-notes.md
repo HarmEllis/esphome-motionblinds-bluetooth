@@ -215,6 +215,23 @@ remainder is issued once against the geometry as it now stands. Thus a stalled
 leader cannot be crossed, while a healthy translation still reaches the full
 requested position after at most one extra command per rail.
 
+### Two direct cover calls are one rail-pair request
+
+Home Assistant's `parallel` action and a dashboard's `Promise.all` still send
+the top and bottom cover positions as two API messages. Dispatching the first
+message immediately loses the intended pair geometry. On 2026-08-31 the calls
+for the large blind arrived 2.7 ms apart: top to 50%, then bottom to 20%. The
+top request was planned alone, clamped against the bottom rail's old position
+and sent first; only after it settled did the bottom request run. The TV blind
+showed the complementary symptom from stacked rails: its first top request was
+clamped to its current position, so only the bottom rail visibly moved.
+
+The coordinator now holds a single direct-rail request for 30 ms. An opposite
+rail arriving in that window is folded into the same absolute target pair and
+dispatched immediately, so the direction-aware planner can choose the rail
+that opens the gap. A genuine one-rail command gains only 30 ms, negligible
+next to a BLE connection, while combined-cover commands remain immediate.
+
 ### One reported percent is half a second to a second of travel
 
 The number that makes early release defensible. Rails move at roughly 1–2 %/s
