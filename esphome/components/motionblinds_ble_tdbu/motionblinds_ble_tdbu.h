@@ -108,6 +108,7 @@ class MotionblindsBLETdbu : public Component {
   /// What the coordinator is waiting for before the trailing rail may start.
   enum class Wait : uint8_t {
     NONE,       ///< there is already room; both may run together
+    TARGET_CLEARANCE, ///< wait until the full follower target is safe
     DEPARTURE,  ///< wait for observed proof that the leading rail has left
     CLEARANCE,  ///< wait until the leading rail has opened the gap up
   };

@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.29-beta1
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.0
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v0.0.29-beta1
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.0
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -371,11 +371,17 @@ the right order. Five rules:
    | Both rails | Physically | The second rail starts |
    | --- | --- | --- |
    | opening the gap | diverging | **immediately**, whatever `start_gap` says — every instant of both moves increases the gap |
-   | one each way | a translation, the gap constant | once the leading rail is **observed to have moved at least one reported percent** in the gap-opening direction, and the clearance floor is met |
+   | one each way | same direction | once fresh feedback clears the follower’s full target; if it already fits, the gap/departure rule applies |
    | closing the gap | converging | once the observed gap passes `start_gap`, or the leading rail has finished |
 
-   When the rails already have more than `start_gap` between them, both start
-   together in every case — they are allowed to travel at the same time; what
+   For rails travelling in the same direction, a follower whose full target
+   is blocked waits until fresh leader feedback clears that target, including
+   `min_gap` and `safety_margin`. Its connection can be prepared while it waits.
+   This avoids a short move to the leader’s old position followed by a second
+   move after the leader arrives.
+
+   Otherwise, when the rails already have at least `start_gap` between them,
+   both start together — they are allowed to travel at the same time; what
    they must not do is set off together while they are close. Set
    `direction_aware: false` to fall back to the gap-only rule everywhere.
    Except when both rails move apart, the follower is initially clipped against
@@ -434,8 +440,9 @@ was pure loss:
   keeps the length and changes the centre). Both rails travel the same way by
   the same amount, so **the gap never changes at all** — and a rule that waits
   for the gap to grow therefore waited out the leading rail's *entire* travel,
-  every time. The second rail now goes as soon as the first is observed to have
-  moved off, typically within a second.
+  every time. If the follower’s full destination is still blocked, it waits
+  until the leader is observed beyond that destination plus the safety margin.
+  If the destination already fits, the departure rule below applies.
 
 The evidence for that release is logged, because it is the number to check if a
 blind ever looks like it started the second rail too early:

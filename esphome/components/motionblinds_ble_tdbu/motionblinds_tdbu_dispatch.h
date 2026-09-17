@@ -21,15 +21,10 @@ using esphome::motionblinds_ble::RailRange;
  *                        travel onwards. Waiting protects nothing, and this is
  *                        the most common command there is — opening or closing
  *                        a blind whose rails are stacked together.
- *   one AWAY, one TOWARD a pure translation: both rails move the same physical
- *                        direction by the same amount, so **the gap never
- *                        changes**. `gap >= start_gap` therefore can never
- *                        become true if it was not true at dispatch, and the
- *                        old rule silently degraded to "the second rail waits
- *                        out the first one's entire travel". What is actually
- *                        needed is proof that the gap-opening rail has left, so
- *                        the trailing rail is following it rather than driving
- *                        into a stationary obstacle.
+ *   one AWAY, one TOWARD both rails travel the same physical direction. If the
+ *                        follower's target is blocked, wait for fresh feedback
+ *                        clearing its entire destination, regardless of the
+ *                        initial gap. Otherwise use the gap/departure rule.
  *   both rails TOWARD    the rails converge. Nothing about starting early is
  *                        safe here, so this keeps the conservative rule.
  *
@@ -40,6 +35,7 @@ using esphome::motionblinds_ble::RailRange;
 /// What has to be true before the trailing rail's command may be written.
 enum class StartRule : uint8_t {
   TOGETHER,         ///< both commands go out in the same pass
+  AFTER_TARGET_CLEARANCE, ///< full follower target fits behind a freshly observed leader
   AFTER_DEPARTURE,  ///< the leading rail must be observed to have moved away first
   AFTER_CLEARANCE,  ///< the conservative rule: `start_gap` observed, or the lead settled
 };
@@ -66,6 +62,8 @@ struct DispatchRequest {
   /// rail that travels faster than the one it is following closes the gap for
   /// the whole move, and departure proof says nothing about relative speed.
   bool speeds_known_different{false};
+  /// The follower cannot yet reach its full target behind the leader.
+  bool follower_target_blocked{false};
 };
 
 /// Whether a pending Home Assistant rail request contains enough context to
@@ -75,6 +73,16 @@ struct DispatchRequest {
 inline bool rail_request_ready(bool combined, bool has_top, bool has_bottom, uint32_t elapsed_ms,
                                uint32_t pair_window_ms) {
   return combined || (has_top && has_bottom) || elapsed_ms >= pair_window_ms;
+}
+
+// Window coordinates increase downwards. Require actual feedback even in
+// optimistic mode; an intended leader target is never clearance evidence.
+inline bool follower_target_clear(Rail lead, float lead_position, float follower_target,
+                                  float effective_gap, bool fresh) {
+  if (!fresh || !std::isfinite(lead_position) || !std::isfinite(follower_target))
+    return false;
+  return lead == Rail::BOTTOM ? lead_position >= follower_target + effective_gap
+                              : lead_position <= follower_target - effective_gap;
 }
 
 inline DispatchPlan plan_dispatch(const DispatchRequest &request) {
@@ -121,6 +129,11 @@ inline DispatchPlan plan_dispatch(const DispatchRequest &request) {
     // Every intermediate state of both moves increases the gap, and overshoot
     // can only increase it further. `start_gap` has nothing to say here.
     plan.rule = StartRule::TOGETHER;
+    return plan;
+  }
+
+  if (plan.same_direction && request.follower_target_blocked) {
+    plan.rule = StartRule::AFTER_TARGET_CLEARANCE;
     return plan;
   }
 

@@ -69,8 +69,8 @@ motionblinds_ble_tdbu:
     # can be trusted and a move does not have to wait for both motors first.
     optimistic: true
     # Let the start rule see which way the rails are going. Two rails opening
-    # the gap start together; a translation releases the following rail as soon
-    # as the leading one is observed to have moved off.
+    # the gap start together; a blocked follower waits until the leading rail
+    # is observed clear of its full destination.
     direction_aware: true
     preconnect_trailing: true
     prepare_timeout: 120s

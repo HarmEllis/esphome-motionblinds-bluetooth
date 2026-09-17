@@ -376,6 +376,10 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
   request.direction_aware = this->direction_aware_;
   request.speeds_known_different = this->speeds_known_different_();
 
+  const bool bottom_leads = bottom_direction == Direction::AWAY && top_direction == Direction::TOWARD;
+  request.follower_target_blocked =
+      !follower_target_clear(bottom_leads ? Rail::BOTTOM : Rail::TOP, bottom_leads ? bottom : top,
+                             bottom_leads ? target_top : target_bottom, this->geometry_.effective_gap(), true);
   const DispatchPlan plan = plan_dispatch(request);
 
   if (!plan.moves) {
@@ -402,6 +406,9 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
     case StartRule::TOGETHER:
       this->wait_ = Wait::NONE;
       break;
+    case StartRule::AFTER_TARGET_CLEARANCE:
+      this->wait_ = Wait::TARGET_CLEARANCE;
+      break;
     case StartRule::AFTER_DEPARTURE:
       this->wait_ = Wait::DEPARTURE;
       break;
@@ -416,9 +423,10 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
     // two happened is otherwise invisible from Home Assistant.
     if (plan.same_direction && plan.rule == StartRule::AFTER_CLEARANCE && this->direction_aware_)
       ESP_LOGI(TAG, "Both rails travel the same way but their speed settings differ; keeping the conservative wait");
-    ESP_LOGD(TAG, "%s rail leads; the %s rail waits for %s", plan.lead == Rail::TOP ? "Top" : "Bottom",
+    ESP_LOGI(TAG, "%s rail leads; the %s rail waits for %s", plan.lead == Rail::TOP ? "Top" : "Bottom",
              plan.trail == Rail::TOP ? "top" : "bottom",
-             plan.rule == StartRule::AFTER_DEPARTURE ? "it to move off" : "clearance");
+             plan.rule == StartRule::AFTER_TARGET_CLEARANCE ? "its full target to become clear"
+             : plan.rule == StartRule::AFTER_DEPARTURE ? "it to move off" : "clearance");
   }
 
   // The rail that goes first is held off where the other one is standing: it is
@@ -584,7 +592,15 @@ void MotionblindsBLETdbu::advance_() {
 
   bool release = settled;
   const char *why = "has finished";
-  if (!release && this->wait_ == Wait::DEPARTURE) {
+  if (this->wait_ == Wait::TARGET_CLEARANCE) {
+    // Settlement permits the final safely quantised target even when the
+    // requested floating-point target lies between two motor steps.
+    const bool target_clear =
+        follower_target_clear(this->lead_, lead_position, this->trail_target_, this->geometry_.effective_gap(),
+                              this->fresh_(this->lead_));
+    release = target_clear || settled;
+    why = target_clear ? "has cleared the full follower target" : "has finished";
+  } else if (!release && this->wait_ == Wait::DEPARTURE) {
     release = this->departure_proven_();
     why = "has moved off";
   } else if (!release && gap >= this->start_gap_) {
