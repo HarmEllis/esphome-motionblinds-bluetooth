@@ -9,6 +9,15 @@ namespace esphome::motionblinds_ble_tdbu {
 
 using esphome::motionblinds_ble::RailRange;
 
+// Called only after the motor has resolved its queued/in-flight work. Allow
+// one reporting quantum for rounding, but never treat an unknown position or
+// an unfinished clamped target as success.
+inline bool rail_target_reached(float position, float committed, float intended, float quantum) {
+  return std::isfinite(position) && std::isfinite(committed) && std::isfinite(intended) &&
+         std::isfinite(quantum) && quantum > 0.0f &&
+         std::fabs(position - committed) <= quantum && std::fabs(committed - intended) <= quantum;
+}
+
 /* When the two rails of one blind may be set off, and what counts as proof
  * that the first one has left.
  *

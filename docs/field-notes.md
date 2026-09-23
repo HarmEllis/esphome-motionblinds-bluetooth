@@ -10,6 +10,39 @@ Written while bringing six motors up on one ESP32-S3 in August 2026.
 
 ## The motors
 
+### Failed opens must leave other motors a chance to be discovered
+
+**Observed 2026-09-22, Woonkamer-ble-proxy-2.** A paired twilight request
+arrived at 19:43:59. Bank bottom and large-window bottom reached 80 at
+19:44:26 and 19:44:31. Bank top exhausted three connection attempts at
+19:45:35 without sending its position command. Large-window top sent its
+command at 19:45:42, 103 seconds after the request, and reached 50 at
+19:46:04. Bank top was heard at -77 dBm between failures; these logs do not
+establish why its subsequent connection failed.
+
+Previously a freshly discovered identity was immediately eligible for another
+cached open even if the connection following that advertisement failed. Each
+pending open stops the shared tracker from scanning. Connection retries now
+disable that client for five seconds after the first failure and ten after the
+second, then require a fresh advertisement. The first attempt retains the
+cached shortcut; the three-attempt limit and total operation deadline remain.
+The pauses provide opportunities for other clients, not a guarantee of radio
+fairness or of a successful connection.
+
+The coordinator also checks participating motors for failure before dispatching
+the follower or completing the pair. A failed motor clears its queue, so an
+empty queue alone cannot mean success. Outstanding partner work is stopped,
+leases are released, and the pair retains a rail-specific diagnostic error.
+Normal completion checks the reported position and any unfinished clamped
+target, allowing one reporting quantum for rounding.
+
+Early disconnection of the completed leading rail was considered but not
+implemented: it would remove the fresh feedback used by the clearance
+watchdog, including feedback from physical-remote movement. Both leases remain
+until completion or abandonment. Host tests exercise the production
+coordinator with motor doubles; radio latency and reliability still need a
+device trial.
+
 ### A connection can be alive, keyed, and completely inert
 
 A motor accepts the connection, confirms its notification descriptor, accepts

@@ -31,6 +31,15 @@ jobs:
             test/tdbu_test.cpp -o tdbu_test
           ./tdbu_test
 
+      - name: Coordinator failure handling
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I test/stubs -I . -I esphome/components/motionblinds_ble_tdbu \
+            test/coordinator_test.cpp \
+            esphome/components/motionblinds_ble_tdbu/motionblinds_ble_tdbu.cpp \
+            -o coordinator_test
+          ./coordinator_test
+
       - name: Position command recovery
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \

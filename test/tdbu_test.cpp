@@ -657,6 +657,13 @@ void test_translation_is_safe_and_completable(bool target_aware) {
 }  // namespace
 
 int main() {
+  check(rail_target_reached(50, 50, 50, 1), "a settled rail at its requested target completes");
+  check(!rail_target_reached(0, 50, 50, 1), "bank top remaining at zero is not completion");
+  check(!rail_target_reached(NAN, 50, 50, 1), "an unknown position cannot complete");
+  check(!rail_target_reached(60, 60, 70, 1), "an unfinished clamped move cannot complete");
+  check(rail_target_reached(70, 70, 70, 1), "a completed residual reaches the intended position");
+  check(rail_target_reached(50, 50, 50.5f, 1), "sub-quantum rounding is permitted");
+  check(!rail_target_reached(50, 50, 50, 0), "invalid rail scaling cannot complete");
   test_rail_range_transform();
   test_openness_direction();
   test_placement_keeps_extremes_reachable();

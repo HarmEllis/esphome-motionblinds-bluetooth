@@ -771,6 +771,24 @@ void MotionblindsBLETdbu::loop() {
 
   const uint32_t now = millis();
 
+  // A failed motor has emptied its queue, so !motors_busy_() is not proof of
+  // success. Check before advancing the follower or attempting a residual.
+  if (this->phase_ == Phase::LEADING || this->phase_ == Phase::TRAILING) {
+    for (const Rail rail : {Rail::TOP, Rail::BOTTOM}) {
+      const bool held = rail == Rail::TOP ? this->leased_top_ : this->leased_bottom_;
+      if (held && this->motor_(rail)->state() == esphome::motionblinds_ble::MotorState::FAILED) {
+        // Cancel the partner's queued move too: releasing a lease alone does
+        // not prevent a delayed command from running after abandonment.
+        const Rail other = rail == Rail::TOP ? Rail::BOTTOM : Rail::TOP;
+        if (this->motor_(other)->busy())
+          this->motor_(other)->request_stop();
+        this->abandon_(rail == Rail::TOP ? "the top rail failed; requested position not reached"
+                                        : "the bottom rail failed; requested position not reached");
+        return;
+      }
+    }
+  }
+
   switch (this->phase_) {
     case Phase::REFRESHING:
       if (this->fresh_(Rail::TOP) && this->fresh_(Rail::BOTTOM)) {
@@ -815,6 +833,16 @@ void MotionblindsBLETdbu::loop() {
         if (residual == ResidualResult::FAILED) {
           this->abandon_("a rail did not accept its residual position command");
           break;
+        }
+        for (const Rail rail : {Rail::TOP, Rail::BOTTOM}) {
+          const RailCommand &record = this->commanded_[rail == Rail::TOP ? 0 : 1];
+          if (record.active &&
+              !rail_target_reached(this->position_(rail), record.achieved, record.intended,
+                                   rail_quantum(this->motor_(rail)->rail_range()))) {
+            this->abandon_(rail == Rail::TOP ? "the top rail did not reach its requested position"
+                                            : "the bottom rail did not reach its requested position");
+            return;
+          }
         }
         this->finish_();
       }

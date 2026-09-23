@@ -166,6 +166,10 @@ void test_verify_start_after_clamp() {
 }  // namespace
 
 int main() {
+  check(connection_retry_delay(0) == 0, "the first connection is not delayed");
+  check(connection_retry_delay(1) == 5000, "the first failed open leaves five seconds for other motors");
+  check(connection_retry_delay(2) == 10000, "a repeated failure gets a longer cooldown");
+  check(connection_retry_delay(255) == 10000, "the cooldown remains bounded");
   test_post_travel_recovery();
   test_start_check_timing();
   test_start_check_is_bounded_and_spaced();

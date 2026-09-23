@@ -4,6 +4,12 @@
 
 namespace esphome::motionblinds_ble {
 
+// Leave a real advertisement-scanning opportunity between failed opens.
+// Retries use discovery, never immediately re-enter the cached-open queue.
+constexpr uint32_t connection_retry_delay(uint8_t failures) {
+  return failures == 0 ? 0 : (failures == 1 ? 5000 : 10000);
+}
+
 /// Shared total delivery budget for an absolute position. Both the early
 /// no-start check and the later post-travel recovery consume this same budget:
 /// once either path re-sends, the other may never add a third position write.

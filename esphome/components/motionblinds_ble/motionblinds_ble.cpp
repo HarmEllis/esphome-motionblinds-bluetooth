@@ -359,7 +359,7 @@ void MotionblindsBLEMotor::loop() {
 
     case MotorState::DISCOVERING: {
       if (this->backoff_until_ != 0) {
-        if (now < this->backoff_until_)
+        if (static_cast<int32_t>(now - this->backoff_until_) < 0)
           break;  // deliberately quiet between rounds
         this->backoff_until_ = 0;
         this->discovery_scanning_ms_ = 0;
@@ -582,11 +582,17 @@ void MotionblindsBLEMotor::reconcile_state_() {
           if (++this->attempts_ >= MAX_ATTEMPTS) {
             this->fail_("gave up after repeated connection failures");
           } else {
-            ESP_LOGW(TAG, "[%s] Retrying, attempt %u of %u", this->label_, static_cast<unsigned>(this->attempts_ + 1),
-                     static_cast<unsigned>(MAX_ATTEMPTS));
-            this->ble_client_->set_enabled(true);
+            const uint32_t delay = connection_retry_delay(this->attempts_);
+            ESP_LOGW(TAG, "[%s] Retrying after %us of cooldown via advertisement discovery, attempt %u of %u",
+                     this->label_, static_cast<unsigned>(delay / 1000),
+                     static_cast<unsigned>(this->attempts_ + 1), static_cast<unsigned>(MAX_ATTEMPTS));
+            // An immediate cached open stops scanning for every other motor.
+            // This also applies to identities learned from an advertisement
+            // whose subsequent open failed. Keep the operation and attempt
+            // budgets, but require a new advertisement after a quiet period.
+            this->ble_client_->set_enabled(false);
+            this->backoff_until_ = millis() + delay;
             this->set_state_(MotorState::DISCOVERING);
-            this->ble_client_->try_cached_connect();
           }
         }
       }
