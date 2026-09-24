@@ -43,6 +43,21 @@ until completion or abandonment. Host tests exercise the production
 coordinator with motor doubles; radio latency and reliability still need a
 device trial.
 
+**Observed 2026-09-24, same node.** Both paired twilight requests arrived at
+19:42:14. Both bottom rails reached 80% at 19:42:49–52, but their leases kept
+both links open until 19:45:10–14. Bank top was heard at -72 and -80 dBm, yet
+its opens timed out three times; large-window top was never heard during three
+discovery rounds after its cached open timed out. Both pairs reported that the
+top rail failed. The earlier beta had already failed bank top on 2026-09-22,
+so the two incidents do not establish whether the beta changed BLE reliability.
+
+The next trial serialises whole blind operations on the node. A later blind
+keeps its latest requested geometry until the earlier blind has finished and
+both of its motor links have closed. This tests whether the simultaneous two
+bottom links contributed to the failed top connections; it cannot fix a top
+motor that also fails when its blind is alone. The radio result still needs a
+device trial.
+
 ### A connection can be alive, keyed, and completely inert
 
 A motor accepts the connection, confirms its notification descriptor, accepts

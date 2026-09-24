@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta1
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta2
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta1
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta2
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -739,6 +739,21 @@ Two cases lose the stored state on purpose, and a single refresh restores it:
   be made to agree.
 
 ## Running more than one node
+
+### Several blinds on one node
+
+Complete top-down bottom-up blind moves now take turns on a shared node. When
+Home Assistant commands several blinds together, each blind keeps only its
+latest requested geometry while it waits; its two rails are still planned and
+monitored together. The next blind begins after the previous operation ends and
+both of its BLE links close. A queued blind reports `waiting for a BLE turn` in
+its diagnostic status. Stopping a queued request cancels it without opening a
+motor connection.
+
+This reduces simultaneous connection and scanning load, but makes a group move
+sequential. The usual idle disconnect delay can add about 15 seconds between
+blinds. A motor that still cannot advertise or accept a BLE connection can
+still fail; the next queued blind is attempted after its links clear.
 
 Six motors is the ceiling on one ESP32, but it is not always the right number. A
 motor at the far end of the house shares a radio with five others and drags out

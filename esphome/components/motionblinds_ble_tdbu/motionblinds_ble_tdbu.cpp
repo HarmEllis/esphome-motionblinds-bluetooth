@@ -10,6 +10,18 @@
 namespace esphome::motionblinds_ble_tdbu {
 
 static const char *const TAG = "motionblinds_ble_tdbu";
+MotionblindsBLETdbu *MotionblindsBLETdbu::first_registered_ = nullptr;
+uint32_t MotionblindsBLETdbu::next_queue_ticket_ = 0;
+
+MotionblindsBLETdbu::~MotionblindsBLETdbu() {
+  if (!this->registered_)
+    return;
+  auto **link = &first_registered_;
+  while (*link != nullptr && *link != this)
+    link = &(*link)->next_registered_;
+  if (*link == this)
+    *link = this->next_registered_;
+}
 
 void MotionblindsBLETdbu::setup() {
   this->geometry_ = Geometry(this->fabric_, this->min_gap_, this->safety_margin_, this->top_->rail_range(),
@@ -24,12 +36,20 @@ void MotionblindsBLETdbu::setup() {
   auto on_update = [this]() { this->on_motor_update_(); };
   this->top_->add_on_update_callback(on_update);
   this->bottom_->add_on_update_callback(on_update);
+
+  this->next_registered_ = first_registered_;
+  first_registered_ = this;
+  this->registered_ = true;
 }
 
 const char *MotionblindsBLETdbu::status_text() const {
   if (this->last_error_ != nullptr && this->phase_ == Phase::IDLE)
     return this->last_error_;
+  if (this->pending_.active && this->phase_ == Phase::IDLE)
+    return "waiting for a BLE turn";
   if (this->prepared_ && this->phase_ == Phase::IDLE) {
+    if (!this->prepared_links_active_)
+      return "waiting to prepare both rails";
     if (this->fresh_(Rail::TOP) && this->fresh_(Rail::BOTTOM) &&
         this->top_->state() == esphome::motionblinds_ble::MotorState::READY &&
         this->bottom_->state() == esphome::motionblinds_ble::MotorState::READY)
@@ -169,6 +189,7 @@ void MotionblindsBLETdbu::set_fabric_centre(float centre) {
 void MotionblindsBLETdbu::submit_(const Intent &intent) {
   if (this->is_failed())
     return;
+  this->last_error_ = nullptr;
 
   // Fold the request into the single desired geometry. Two entities each own
   // one half of it, and merging here is what stops the second from computing
@@ -213,17 +234,65 @@ void MotionblindsBLETdbu::submit_(const Intent &intent) {
     this->pending_ = intent;
     this->pending_.generation = ++this->generation_;
     this->pending_.submitted_at = now;
+    this->queue_ticket_ = ++next_queue_ticket_;
+    this->queued_reported_ = false;
   }
 
   if (this->phase_ == Phase::IDLE &&
       rail_request_ready(this->pending_.combined, this->pending_.has_top, this->pending_.has_bottom,
-                         now - this->pending_.submitted_at, RAIL_PAIR_WINDOW_MS))
-    this->begin_();
+                         now - this->pending_.submitted_at, RAIL_PAIR_WINDOW_MS)) {
+    if (this->may_begin_())
+      this->begin_();
+    else
+      this->report_queued_();
+  }
+  this->update_callback_.call();
+}
+
+bool MotionblindsBLETdbu::radio_active_() const {
+  const auto active = [](const MotionblindsBLEMotor *motor) {
+    if (motor == nullptr)
+      return false;
+    const auto state = motor->state();
+    return state != esphome::motionblinds_ble::MotorState::IDLE &&
+           state != esphome::motionblinds_ble::MotorState::FAILED;
+  };
+  return active(this->top_) || active(this->bottom_);
+}
+
+bool MotionblindsBLETdbu::may_begin_() const {
+  for (auto *other = first_registered_; other != nullptr; other = other->next_registered_) {
+    if (other == this)
+      continue;
+    // A finished blind still owns radio time until both links close. The
+    // normal idle disconnect avoids severing feedback during an uncertain move.
+    if (other->phase_ != Phase::IDLE || other->prepared_links_active_ || other->radio_active_())
+      return false;
+    if (other->pending_.active &&
+        static_cast<int32_t>(other->queue_ticket_ - this->queue_ticket_) < 0)
+      return false;
+  }
+  return true;
+}
+
+void MotionblindsBLETdbu::report_queued_() {
+  if (this->queued_reported_)
+    return;
+  this->queued_reported_ = true;
+  ESP_LOGI(TAG, "Blind request queued until the other blind releases its BLE links");
 }
 
 void MotionblindsBLETdbu::stop_rail(Rail rail) {
   // Stop never queues and never waits for the geometry: it has to work while a
   // move is in flight, and it can only ever make the rails safer.
+  if (this->phase_ == Phase::IDLE && this->pending_.active && !this->prepared_ && !this->motors_busy_() &&
+      !this->is_moving()) {
+    // A request waiting for another blind has touched no motor. Cancelling it
+    // must not wake a motor just to send a STOP for movement that never began.
+    this->pending_ = Intent{};
+    this->update_callback_.call();
+    return;
+  }
   MotionblindsBLEMotor *motor = this->motor_(rail);
   if (motor != nullptr)
     motor->request_stop();
@@ -232,13 +301,20 @@ void MotionblindsBLETdbu::stop_rail(Rail rail) {
     this->abandon_("stopped");
   } else if (this->prepared_) {
     this->prepared_ = false;
+    this->prepared_links_active_ = false;
     this->prepared_since_ = 0;
     this->release_leases_();
-    this->update_callback_.call();
   }
+  this->update_callback_.call();
 }
 
 void MotionblindsBLETdbu::stop_all() {
+  if (this->phase_ == Phase::IDLE && this->pending_.active && !this->prepared_ && !this->motors_busy_() &&
+      !this->is_moving()) {
+    this->pending_ = Intent{};
+    this->update_callback_.call();
+    return;
+  }
   if (this->top_ != nullptr)
     this->top_->request_stop();
   if (this->bottom_ != nullptr)
@@ -248,10 +324,11 @@ void MotionblindsBLETdbu::stop_all() {
     this->abandon_("stopped");
   } else if (this->prepared_) {
     this->prepared_ = false;
+    this->prepared_links_active_ = false;
     this->prepared_since_ = 0;
     this->release_leases_();
-    this->update_callback_.call();
   }
+  this->update_callback_.call();
 }
 
 void MotionblindsBLETdbu::prepare() {
@@ -259,8 +336,20 @@ void MotionblindsBLETdbu::prepare() {
     return;
 
   this->last_error_ = nullptr;
+  if (this->prepared_) {
+    this->prepared_since_ = millis();
+    return;
+  }
   this->prepared_ = true;
   this->prepared_since_ = millis();
+  this->queue_ticket_ = ++next_queue_ticket_;
+  if (this->may_begin_())
+    this->start_prepare_();
+  this->update_callback_.call();
+}
+
+void MotionblindsBLETdbu::start_prepare_() {
+  this->prepared_links_active_ = true;
   this->acquire_lease_(Rail::TOP);
   this->acquire_lease_(Rail::BOTTOM);
 
@@ -280,9 +369,14 @@ void MotionblindsBLETdbu::prepare() {
 // ------------------------------------------------------------- the moving
 
 void MotionblindsBLETdbu::begin_() {
+  if (this->queued_reported_)
+    ESP_LOGI(TAG, "Starting queued blind request after %us",
+             static_cast<unsigned>((millis() - this->pending_.submitted_at) / 1000));
+  this->queued_reported_ = false;
   this->operation_since_ = millis();
   this->last_error_ = nullptr;
   this->prepared_ = false;
+  this->prepared_links_active_ = false;
   this->prepared_since_ = 0;
 
   // A prepared or otherwise still-open pair has already supplied positions in
@@ -757,14 +851,21 @@ void MotionblindsBLETdbu::loop() {
     if (this->pending_.active) {
       const uint32_t elapsed = millis() - this->pending_.submitted_at;
       if (rail_request_ready(this->pending_.combined, this->pending_.has_top, this->pending_.has_bottom, elapsed,
-                             RAIL_PAIR_WINDOW_MS))
-        this->begin_();
+                             RAIL_PAIR_WINDOW_MS)) {
+        if (this->may_begin_())
+          this->begin_();
+        else
+          this->report_queued_();
+      }
     } else if (this->prepared_ && millis() - this->prepared_since_ > this->prepare_timeout_) {
       ESP_LOGI(TAG, "Prepared connection window expired; releasing both rails");
       this->prepared_ = false;
+      this->prepared_links_active_ = false;
       this->prepared_since_ = 0;
       this->release_leases_();
       this->update_callback_.call();
+    } else if (this->prepared_ && !this->prepared_links_active_ && this->may_begin_()) {
+      this->start_prepare_();
     }
     return;
   }

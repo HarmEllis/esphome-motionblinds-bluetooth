@@ -38,6 +38,7 @@ using esphome::motionblinds_ble::MotionblindsBLEMotor;
  */
 class MotionblindsBLETdbu : public Component {
  public:
+  ~MotionblindsBLETdbu();
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -149,6 +150,12 @@ class MotionblindsBLETdbu : public Component {
   bool fresh_(Rail rail) const;
 
   void submit_(const Intent &intent);
+  /// Only one complete blind may use the node's BLE radio at a time. Pending
+  /// intents stay local to their blind and are planned when their turn starts.
+  bool may_begin_() const;
+  bool radio_active_() const;
+  void report_queued_();
+  void start_prepare_();
   void begin_();
   void plan_and_dispatch_();
   /// Send one rail to a window target.
@@ -206,6 +213,13 @@ class MotionblindsBLETdbu : public Component {
 
   Intent pending_{};
   uint32_t generation_{0};
+  uint32_t queue_ticket_{0};
+  bool queued_reported_{false};
+  bool prepared_links_active_{false};
+  bool registered_{false};
+  MotionblindsBLETdbu *next_registered_{nullptr};
+  static MotionblindsBLETdbu *first_registered_;
+  static uint32_t next_queue_ticket_;
 
   Phase phase_{Phase::IDLE};
   uint32_t phase_since_{0};

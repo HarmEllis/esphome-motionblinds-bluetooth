@@ -12,7 +12,7 @@ class MotionblindsBLEMotor {
   bool fresh{true};
   bool pending{false};
   bool written{false};
-  MotorState current_state{MotorState::READY};
+  MotorState current_state{MotorState::IDLE};
   int leases{0};
   int stops{0};
   int commands{0};
@@ -29,7 +29,7 @@ class MotionblindsBLEMotor {
   std::optional<int> speed() const { return {}; }
   bool position_write_sent() const { return pending && written; }
   bool command_origin(uint8_t &, bool &) const { return false; }
-  void acquire_lease() { leases++; }
+  void acquire_lease() { leases++; current_state = MotorState::READY; }
   void release_lease() { if (leases > 0) leases--; }
   bool request_position(float value, uint32_t) {
     target = value;
