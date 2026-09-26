@@ -31,9 +31,10 @@ inline bool rail_target_reached(float position, float committed, float intended,
  *                        the most common command there is — opening or closing
  *                        a blind whose rails are stacked together.
  *   one AWAY, one TOWARD both rails travel the same physical direction. If the
- *                        follower's target is blocked, wait for fresh feedback
- *                        clearing its entire destination, regardless of the
- *                        initial gap. Otherwise use the gap/departure rule.
+ *                        follower's target is blocked, first observe the
+ *                        leader departing, then follow with a target clamped
+ *                        to observed clearance. Known-different speeds still
+ *                        require clearance for the entire destination.
  *   both rails TOWARD    the rails converge. Nothing about starting early is
  *                        safe here, so this keeps the conservative rule.
  *
@@ -142,7 +143,11 @@ inline DispatchPlan plan_dispatch(const DispatchRequest &request) {
   }
 
   if (plan.same_direction && request.follower_target_blocked) {
-    plan.rule = StartRule::AFTER_TARGET_CLEARANCE;
+    // A roomy initial gap does not prove that the leader has started. Once
+    // departure is observed, the follower can use that space safely without
+    // waiting for its entire destination to fit. The coordinator clamps its
+    // first command and completes the remainder after the leader settles.
+    plan.rule = request.speeds_known_different ? StartRule::AFTER_TARGET_CLEARANCE : StartRule::AFTER_DEPARTURE;
     return plan;
   }
 

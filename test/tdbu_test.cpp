@@ -437,16 +437,19 @@ void test_full_target_clearance() {
     auto down = request(Direction::TOWARD, Direction::AWAY, gap, 10.0f);
     down.follower_target_blocked = true;
     check(plan_dispatch(down).lead == Rail::BOTTOM, "bottom leads downward move");
-    check(plan_dispatch(down).rule == StartRule::AFTER_TARGET_CLEARANCE,
-          "blocked target overrides initial gap");
+    check(plan_dispatch(down).rule == StartRule::AFTER_DEPARTURE,
+          "blocked target requires departure even with a roomy initial gap");
     down.speeds_known_different = true;
     check(plan_dispatch(down).rule == StartRule::AFTER_TARGET_CLEARANCE,
           "unequal speeds do not bypass full target clearance");
     auto up = request(Direction::AWAY, Direction::TOWARD, gap, 10.0f);
     up.follower_target_blocked = true;
     check(plan_dispatch(up).lead == Rail::TOP, "top leads upward move");
+    check(plan_dispatch(up).rule == StartRule::AFTER_DEPARTURE,
+          "upward move can follow observed departure with a clamped target");
+    up.speeds_known_different = true;
     check(plan_dispatch(up).rule == StartRule::AFTER_TARGET_CLEARANCE,
-          "upward move also waits for full target");
+          "upward move with unequal speeds still waits for full target");
   }
   for (int position = 10; position <= 80; position++) {
     check(follower_target_clear(Rail::BOTTOM, position, 50, 2, true) == (position >= 52),
@@ -511,7 +514,7 @@ void test_departure_proof() {
 // observed release position, never against an unacknowledged far-away target.
 // Once the lead has really arrived, the residual pass can safely deliver the
 // remainder.
-void test_translation_is_safe_and_completable(bool target_aware) {
+void test_translation_is_safe_and_completable(bool target_aware, bool different_speeds = false) {
   std::printf("translation safety and residual completion\n");
 
   const Geometry field = full(Fabric::BETWEEN_RAILS, 5.0f, 2.0f);
@@ -562,6 +565,7 @@ void test_translation_is_safe_and_completable(bool target_aware) {
 
           auto dispatch = request(Geometry::classify(Rail::TOP, top, target_top),
                                   Geometry::classify(Rail::BOTTOM, bottom, target_bottom), initial_gap, 10.0f);
+          dispatch.speeds_known_different = different_speeds;
           if (target_aware)
             dispatch.follower_target_blocked = !follower_target_clear(
                 shift > 0 ? Rail::BOTTOM : Rail::TOP, shift > 0 ? bottom : top,
@@ -644,7 +648,7 @@ void test_translation_is_safe_and_completable(bool target_aware) {
 
   std::printf("  swept %d translations (%d target waits, %d after departure, %d together)\n",
               translations, target_waits, departures, together);
-  check(translations > 0 && together > 0 && (target_aware ? target_waits > 0 : departures > 0),
+  check(translations > 0 && together > 0 && (different_speeds ? target_waits > 0 : departures > 0),
         "the sweep exercises waiting and simultaneous starts");
   check(stalled_lead_violations == 0,
         "a follower stays safe when the lead stalls (" + std::to_string(stalled_lead_violations) +
@@ -678,6 +682,7 @@ int main() {
   test_departure_proof();
   test_translation_is_safe_and_completable(false);
   test_translation_is_safe_and_completable(true);
+  test_translation_is_safe_and_completable(true, true);
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

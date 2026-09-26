@@ -261,18 +261,58 @@ bool MotionblindsBLETdbu::radio_active_() const {
 }
 
 bool MotionblindsBLETdbu::may_begin_() const {
+  const bool exclusive = this->prepared_ || this->needs_paired_turn_();
   for (auto *other = first_registered_; other != nullptr; other = other->next_registered_) {
     if (other == this)
       continue;
     // A finished blind still owns radio time until both links close. The
     // normal idle disconnect avoids severing feedback during an uncertain move.
-    if (other->phase_ != Phase::IDLE || other->prepared_links_active_ || other->radio_active_())
+    if ((other->phase_ != Phase::IDLE || other->prepared_links_active_ || other->radio_active_()) &&
+        (exclusive || other->paired_turn_ || other->prepared_links_active_))
       return false;
-    if (other->pending_.active &&
-        static_cast<int32_t>(other->queue_ticket_ - this->queue_ticket_) < 0)
+    if ((other->pending_.active || other->prepared_) &&
+        static_cast<int32_t>(other->queue_ticket_ - this->queue_ticket_) < 0 &&
+        (exclusive || other->prepared_ || other->needs_paired_turn_()))
       return false;
   }
   return true;
+}
+
+bool MotionblindsBLETdbu::needs_paired_turn_() const {
+  // Preparing or refreshing positions opens both links even if only one rail
+  // ultimately moves. A finished paired move keeps its turn until disconnect.
+  if (this->prepared_links_active_ || (this->paired_turn_ && this->radio_active_()) ||
+      !this->pending_.active || !this->positions_known() ||
+      (!this->optimistic_ && (!this->fresh_(Rail::TOP) || !this->fresh_(Rail::BOTTOM))))
+    return true;
+
+  const Placement placement = this->requested_placement_();
+  return Geometry::classify(Rail::TOP, this->position_(Rail::TOP), placement.top) != Direction::STATIONARY &&
+         Geometry::classify(Rail::BOTTOM, this->position_(Rail::BOTTOM), placement.bottom) != Direction::STATIONARY;
+}
+
+Placement MotionblindsBLETdbu::requested_placement_() const {
+  if (this->pending_.combined)
+    return this->geometry_.place_segment(this->desired_length_, this->desired_centre_);
+
+  if (this->pending_.has_top && this->pending_.has_bottom) {
+    const float top = this->geometry_.rail_window_target(Rail::TOP, this->pending_.top_position);
+    const float bottom = this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.bottom_position);
+    return this->geometry_.place_segment(bottom - top, (top + bottom) / 2.0f);
+  }
+
+  Placement placement;
+  placement.top = this->position_(Rail::TOP);
+  placement.bottom = this->position_(Rail::BOTTOM);
+  if (this->pending_.has_top)
+    placement.top = this->geometry_.clamp_target(
+        Rail::TOP, this->geometry_.rail_window_target(Rail::TOP, this->pending_.top_position), placement.bottom);
+  else
+    placement.bottom = this->geometry_.clamp_target(
+        Rail::BOTTOM, this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.bottom_position), placement.top);
+  placement.length = placement.bottom - placement.top;
+  placement.feasible = true;
+  return placement;
 }
 
 void MotionblindsBLETdbu::report_queued_() {
@@ -349,6 +389,7 @@ void MotionblindsBLETdbu::prepare() {
 }
 
 void MotionblindsBLETdbu::start_prepare_() {
+  this->paired_turn_ = true;
   this->prepared_links_active_ = true;
   this->acquire_lease_(Rail::TOP);
   this->acquire_lease_(Rail::BOTTOM);
@@ -369,6 +410,7 @@ void MotionblindsBLETdbu::start_prepare_() {
 // ------------------------------------------------------------- the moving
 
 void MotionblindsBLETdbu::begin_() {
+  this->paired_turn_ = this->needs_paired_turn_();
   if (this->queued_reported_)
     ESP_LOGI(TAG, "Starting queued blind request after %us",
              static_cast<unsigned>((millis() - this->pending_.submitted_at) / 1000));
@@ -425,39 +467,18 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
   const float top = this->position_(Rail::TOP);
   const float bottom = this->position_(Rail::BOTTOM);
 
-  float target_top = top;
-  float target_bottom = bottom;
-
-  if (this->pending_.combined) {
-    const Placement placement = this->geometry_.place_segment(this->desired_length_, this->desired_centre_);
-    if (!placement.feasible)
+  // Share target resolution with the turn scheduler so it counts the rails
+  // that actually move, including combined requests and a rail already there.
+  const Placement placement = this->requested_placement_();
+  if (!placement.feasible) {
+    if (this->pending_.combined)
       ESP_LOGW(TAG, "Requested %.0f%% of travel is not reachable; using %.0f%%", this->desired_length_,
                placement.length);
-    target_top = placement.top;
-    target_bottom = placement.bottom;
-  } else if (this->pending_.has_top && this->pending_.has_bottom) {
-    // Resolve both absolute rail positions together. This is the path used by
-    // parallel HA cover actions and is what lets the dispatcher see that, for
-    // example, the bottom rail must leave before the top rail can follow it.
-    const float requested_top = this->geometry_.rail_window_target(Rail::TOP, this->pending_.top_position);
-    const float requested_bottom =
-        this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.bottom_position);
-    const Placement placement =
-        this->geometry_.place_segment(requested_bottom - requested_top, (requested_top + requested_bottom) / 2.0f);
-    if (!placement.feasible)
+    else
       ESP_LOGW(TAG, "Requested rail pair is not reachable without crossing; using the nearest safe placement");
-    target_top = placement.top;
-    target_bottom = placement.bottom;
-  } else if (this->pending_.has_top) {
-    // Clamp here rather than at dispatch, so the direction classification and
-    // the clearance wait both reason about the target the rail will really be
-    // given. A wait on an unreachable target would never be satisfied.
-    target_top = this->geometry_.clamp_target(
-        Rail::TOP, this->geometry_.rail_window_target(Rail::TOP, this->pending_.top_position), bottom);
-  } else {
-    target_bottom = this->geometry_.clamp_target(
-        Rail::BOTTOM, this->geometry_.rail_window_target(Rail::BOTTOM, this->pending_.bottom_position), top);
   }
+  const float target_top = placement.top;
+  const float target_bottom = placement.bottom;
 
   const Direction top_direction = Geometry::classify(Rail::TOP, top, target_top);
   const Direction bottom_direction = Geometry::classify(Rail::BOTTOM, bottom, target_bottom);

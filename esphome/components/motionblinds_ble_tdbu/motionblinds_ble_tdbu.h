@@ -150,10 +150,12 @@ class MotionblindsBLETdbu : public Component {
   bool fresh_(Rail rail) const;
 
   void submit_(const Intent &intent);
-  /// Only one complete blind may use the node's BLE radio at a time. Pending
-  /// intents stay local to their blind and are planned when their turn starts.
+  /// Two-rail moves and preparation own the radio exclusively. Single-rail
+  /// moves may share it, without overtaking an older exclusive request.
   bool may_begin_() const;
   bool radio_active_() const;
+  bool needs_paired_turn_() const;
+  Placement requested_placement_() const;
   void report_queued_();
   void start_prepare_();
   void begin_();
@@ -216,6 +218,7 @@ class MotionblindsBLETdbu : public Component {
   uint32_t queue_ticket_{0};
   bool queued_reported_{false};
   bool prepared_links_active_{false};
+  bool paired_turn_{false};  ///< retained until the operation's BLE links close
   bool registered_{false};
   MotionblindsBLETdbu *next_registered_{nullptr};
   static MotionblindsBLETdbu *first_registered_;

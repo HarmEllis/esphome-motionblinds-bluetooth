@@ -17,6 +17,7 @@ class MotionblindsBLEMotor {
   int stops{0};
   int commands{0};
   float target{0};
+  std::optional<int> speed_level{};
   RailRange range{};
   CallbackManager<void()> updates;
   const RailRange &rail_range() const { return range; }
@@ -26,7 +27,7 @@ class MotionblindsBLEMotor {
   bool is_moving() const { return pending && written; }
   int8_t travel_direction() const { return 0; }
   MotorState state() const { return current_state; }
-  std::optional<int> speed() const { return {}; }
+  std::optional<int> speed() const { return speed_level; }
   bool position_write_sent() const { return pending && written; }
   bool command_origin(uint8_t &, bool &) const { return false; }
   void acquire_lease() { leases++; current_state = MotorState::READY; }

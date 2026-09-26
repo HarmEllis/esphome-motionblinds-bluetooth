@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta2
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta3
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta2
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta3
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -371,14 +371,16 @@ the right order. Five rules:
    | Both rails | Physically | The second rail starts |
    | --- | --- | --- |
    | opening the gap | diverging | **immediately**, whatever `start_gap` says — every instant of both moves increases the gap |
-   | one each way | same direction | once fresh feedback clears the follower’s full target; if it already fits, the gap/departure rule applies |
+   | one each way | same direction | if the full target is blocked, after observed departure with a target limited to measured clearance; otherwise the gap/departure rule applies. Known-different speeds retain the full-target wait |
    | closing the gap | converging | once the observed gap passes `start_gap`, or the leading rail has finished |
 
    For rails travelling in the same direction, a follower whose full target
-   is blocked waits until fresh leader feedback clears that target, including
-   `min_gap` and `safety_margin`. Its connection can be prepared while it waits.
-   This avoids a short move to the leader’s old position followed by a second
-   move after the leader arrives.
+   is blocked can start as soon as the leader is observed moving away and the
+   measured gap accommodates `min_gap` and `safety_margin`. Its first target is
+   clamped against the leader’s observed position, so it may pause before a
+   second command finishes the move after the leader arrives. Known-different
+   speed settings retain the full-target clearance wait. The follower’s
+   connection can be prepared while it waits.
 
    Otherwise, when the rails already have at least `start_gap` between them,
    both start together — they are allowed to travel at the same time; what
@@ -440,9 +442,10 @@ was pure loss:
   keeps the length and changes the centre). Both rails travel the same way by
   the same amount, so **the gap never changes at all** — and a rule that waits
   for the gap to grow therefore waited out the leading rail's *entire* travel,
-  every time. If the follower’s full destination is still blocked, it waits
-  until the leader is observed beyond that destination plus the safety margin.
-  If the destination already fits, the departure rule below applies.
+  every time. If the follower’s full destination is still blocked, it can
+  follow as soon as the leader is observed departing. Its first command is
+  limited to observed clearance; any remainder is completed after the leader
+  arrives. A known speed mismatch keeps the full-target clearance wait.
 
 The evidence for that release is logged, because it is the number to check if a
 blind ever looks like it started the second rail too early:
@@ -742,18 +745,25 @@ Two cases lose the stored state on purpose, and a single refresh restores it:
 
 ### Several blinds on one node
 
-Complete top-down bottom-up blind moves now take turns on a shared node. When
-Home Assistant commands several blinds together, each blind keeps only its
-latest requested geometry while it waits; its two rails are still planned and
-monitored together. The next blind begins after the previous operation ends and
-both of its BLE links close. A queued blind reports `waiting for a BLE turn` in
-its diagnostic status. Stopping a queued request cancels it without opening a
-motor connection.
+Top-down bottom-up moves that need both rails take turns on a shared node.
+Moves that need only one rail may run together on different blinds, including
+combined cover requests where the other rail is already at its target. A
+two-rail move waits for other operations and their BLE links to finish, then
+keeps its turn until both of its own links close. Newer single-rail requests
+wait behind an older two-rail request so it cannot be starved. Preparing both
+rails or refreshing stale positions also needs an exclusive turn.
 
-This reduces simultaneous connection and scanning load, but makes a group move
-sequential. The usual idle disconnect delay can add about 15 seconds between
-blinds. A motor that still cannot advertise or accept a BLE connection can
-still fail; the next queued blind is attempted after its links clear.
+When Home Assistant commands several blinds together, each waiting blind keeps
+only its latest requested geometry; its two rails are still planned and
+monitored together. A queued blind reports `waiting for a BLE turn` in its
+diagnostic status. Stopping a queued request cancels it without opening a motor
+connection.
+
+This reduces simultaneous connection and scanning load for two-rail moves,
+but makes those group moves sequential. The usual idle disconnect delay can add
+about 15 seconds between blinds. A motor that still cannot advertise or accept
+a BLE connection can still fail; the next queued blind is attempted after its
+links clear.
 
 Six motors is the ceiling on one ESP32, but it is not always the right number. A
 motor at the far end of the house shares a radio with five others and drags out
