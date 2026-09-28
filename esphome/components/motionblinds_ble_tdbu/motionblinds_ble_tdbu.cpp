@@ -506,6 +506,9 @@ void MotionblindsBLETdbu::plan_and_dispatch_() {
   this->lead_ = plan.lead;
   this->trail_ = plan.trail;
   this->has_trail_ = plan.has_trail;
+  this->incremental_follow_ = plan.has_trail && plan.same_direction &&
+                              plan.rule == StartRule::AFTER_DEPARTURE && request.follower_target_blocked;
+  this->last_follow_status_query_at_ = 0;
   this->lead_target_ = plan.lead == Rail::TOP ? target_top : target_bottom;
   this->trail_target_ = plan.lead == Rail::TOP ? target_bottom : target_top;
   MotionblindsBLEMotor *lead_motor = this->motor_(plan.lead);
@@ -746,6 +749,44 @@ void MotionblindsBLETdbu::advance_() {
   this->wait_ = Wait::NONE;
   this->phase_ = Phase::TRAILING;
   this->phase_since_ = millis();
+  this->last_follow_status_query_at_ = this->phase_since_;
+}
+
+void MotionblindsBLETdbu::follow_leader_() {
+  if (!this->incremental_follow_ || !this->motor_(this->lead_)->busy())
+    return;
+
+  RailCommand &record = this->commanded_[this->trail_ == Rail::TOP ? 0 : 1];
+  const float quantum = rail_quantum(this->motor_(this->trail_)->rail_range());
+  if (!record.active || std::fabs(record.intended - record.achieved) <= quantum)
+    return;
+
+  // Notifications can be sparse during travel. A queued status query would
+  // wait behind the position command, so ask the moving leader directly. Its
+  // reply updates the observed position through the usual notification path.
+  const uint32_t now = millis();
+  if (now - this->last_follow_status_query_at_ >= FOLLOW_STATUS_INTERVAL_MS) {
+    this->last_follow_status_query_at_ = now;
+    this->motor_(this->lead_)->request_motion_status();
+  }
+
+  // Never pile target changes behind an in-flight follower move. Once it
+  // reaches the last safe stopping point, extend only as far as the leader's
+  // *observed* clearance now permits. A stalled lead therefore cannot be
+  // crossed, even when its announced destination is much farther away.
+  if (this->motor_(this->trail_)->busy() || !this->fresh_(this->lead_) || !this->fresh_(this->trail_))
+    return;
+  const uint8_t raw = this->geometry_.raw_target(this->trail_, record.intended, this->position_(this->lead_));
+  const float achievable = this->motor_(this->trail_)->rail_range().to_window(static_cast<float>(raw));
+  const float progress = std::fabs(record.intended - record.achieved) - std::fabs(record.intended - achievable);
+  if (progress + 0.001f < std::fmax(3.0f, 3.0f * quantum) &&
+      std::fabs(record.intended - achievable) > quantum)
+    return;
+  ESP_LOGI(TAG, "Observed more room behind the %s rail; extending the %s rail from %.1f%% to %.1f%%",
+           this->lead_ == Rail::TOP ? "top" : "bottom", this->trail_ == Rail::TOP ? "top" : "bottom",
+           record.achieved, achievable);
+  if (!this->command_(this->trail_, this->trail_target_, this->position_(this->lead_)))
+    this->abandon_("the following rail did not accept its next safe position");
 }
 
 MotionblindsBLETdbu::ResidualResult MotionblindsBLETdbu::complete_residual_() {
@@ -795,6 +836,8 @@ void MotionblindsBLETdbu::finish_() {
   this->lead_reference_fresh_ = false;
   this->lead_command_at_ = 0;
   this->lead_committed_ = 0.0f;
+  this->incremental_follow_ = false;
+  this->last_follow_status_query_at_ = 0;
   this->commanded_[0] = RailCommand{};
   this->commanded_[1] = RailCommand{};
   this->operation_since_ = 0;
@@ -940,6 +983,9 @@ void MotionblindsBLETdbu::loop() {
       break;
 
     case Phase::TRAILING:
+      this->follow_leader_();
+      if (this->phase_ != Phase::TRAILING)
+        break;
       // Wait on the motors, not on is_moving(): that reports this phase too,
       // so the condition could never come true and every move would run until
       // the lease expired.

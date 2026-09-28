@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta3
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta4
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta3
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta4
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -377,9 +377,10 @@ the right order. Five rules:
    For rails travelling in the same direction, a follower whose full target
    is blocked can start as soon as the leader is observed moving away and the
    measured gap accommodates `min_gap` and `safety_margin`. Its first target is
-   clamped against the leader’s observed position, so it may pause before a
-   second command finishes the move after the leader arrives. Known-different
-   speed settings retain the full-target clearance wait. The follower’s
+   clamped against the leader’s observed position. It advances in further
+   safe steps as fresh positions arrive, then completes any remainder after
+   the leader arrives. Known-different speed settings retain the full-target
+   clearance wait. The follower’s
    connection can be prepared while it waits.
 
    Otherwise, when the rails already have at least `start_gap` between them,
@@ -444,8 +445,10 @@ was pure loss:
   for the gap to grow therefore waited out the leading rail's *entire* travel,
   every time. If the follower’s full destination is still blocked, it can
   follow as soon as the leader is observed departing. Its first command is
-  limited to observed clearance; any remainder is completed after the leader
-  arrives. A known speed mismatch keeps the full-target clearance wait.
+  limited to observed clearance. While the leader travels, the coordinator
+  asks for fresh positions and extends the follower's safe stopping point each
+  time it reaches the previous one. Any remainder is completed after the
+  leader arrives. A known speed mismatch keeps the full-target clearance wait.
 
 The evidence for that release is logged, because it is the number to check if a
 blind ever looks like it started the second rail too early:

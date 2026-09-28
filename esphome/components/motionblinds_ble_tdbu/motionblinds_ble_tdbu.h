@@ -179,6 +179,7 @@ class MotionblindsBLETdbu : public Component {
   /// geometry allows the rest of it. Bounded to one extra command per rail.
   ResidualResult complete_residual_();
   void advance_();
+  void follow_leader_();
   void finish_();
   void abandon_(const char *reason);
   void acquire_lease_(Rail rail);
@@ -255,6 +256,9 @@ class MotionblindsBLETdbu : public Component {
   /// settled lead and, only when both rails move away, as a safe clamp reference
   /// for the second command.
   float lead_committed_{0.0f};
+  bool incremental_follow_{false};
+  uint32_t last_follow_status_query_at_{0};
+  static constexpr uint32_t FOLLOW_STATUS_INTERVAL_MS = 3000;
 
   /// What each rail was asked for against what it could be given, so a target
   /// the geometry had to cut short can be finished off afterwards.

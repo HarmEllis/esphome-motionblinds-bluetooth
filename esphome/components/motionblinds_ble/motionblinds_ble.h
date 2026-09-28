@@ -116,6 +116,9 @@ class MotionblindsBLEMotor : public Component {
   bool request_favorite();
   bool request_speed(SpeedLevel level);
   bool request_status();
+  /// Ask for a fresh position while a position command is still in flight.
+  /// Unlike request_status(), this does not queue behind that move.
+  bool request_motion_status();
   void request_connect();
   void request_disconnect();
 

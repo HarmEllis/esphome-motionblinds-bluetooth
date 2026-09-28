@@ -16,6 +16,7 @@ class MotionblindsBLEMotor {
   int leases{0};
   int stops{0};
   int commands{0};
+  int motion_status_queries{0};
   float target{0};
   std::optional<int> speed_level{};
   RailRange range{};
@@ -40,6 +41,7 @@ class MotionblindsBLEMotor {
     return true;
   }
   bool request_status() { pending = true; return true; }
+  bool request_motion_status() { motion_status_queries++; return pending && written; }
   bool request_stop() { stops++; pending = false; written = false; updates.call(); return true; }
   void add_on_update_callback(std::function<void()> callback) { updates.add(std::move(callback)); }
   void complete(float value) { position = value; pending = false; fresh = true; updates.call(); }

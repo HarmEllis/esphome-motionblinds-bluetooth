@@ -56,9 +56,19 @@ int main() {
     trail.complete(trail.target);
     b.coordinator.loop();
     assert(trail.commands == 1); // do not finish the clipped target while the leader is busy
+    esphome::test_now += 3000;
+    b.coordinator.loop();
+    assert(lead.motion_status_queries == 1); // ask for live clearance, not a queued post-move status
+    lead.position = downward ? 55 : 45;
+    b.coordinator.loop();
+    assert(trail.commands == 2 && lead.pending); // keep following before the leader finishes
+    assert(trail.target == lead.position); // intermediate target remains safe if the leader stalls
+    trail.complete(trail.target);
+    b.coordinator.loop();
+    assert(trail.commands == 2); // no duplicate command on unchanged feedback
     lead.complete(downward ? 90 : 10);
     b.coordinator.loop();
-    assert(trail.commands == 2 && trail.target == (downward ? 60 : 40));
+    assert(trail.commands == 3 && trail.target == (downward ? 60 : 40));
     trail.complete(trail.target);
     b.coordinator.loop();
     assert(std::strcmp(b.coordinator.status_text(), "idle") == 0);
@@ -217,6 +227,10 @@ int main() {
     b.bottom.position = 60;
     b.coordinator.loop();
     assert(b.bottom.pending && b.top.commands == 1 && b.top.target == 60);
+    b.top.complete(60);
+    esphome::test_now += 3000;
+    b.coordinator.loop();
+    assert(b.bottom.motion_status_queries == 0); // known-different speeds keep the conservative path
   }
   {
     Blind b;

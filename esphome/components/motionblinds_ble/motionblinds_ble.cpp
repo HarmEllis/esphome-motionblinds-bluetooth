@@ -238,6 +238,19 @@ bool MotionblindsBLEMotor::request_speed(SpeedLevel level) {
 
 bool MotionblindsBLEMotor::request_status() { return this->enqueue_(Command::STATUS_QUERY, 0, Verification::STARTED); }
 
+bool MotionblindsBLEMotor::request_motion_status() {
+  if (this->state_ != MotorState::READY || this->handshake_ != Handshake::DONE || !this->command_in_flight_ ||
+      this->in_flight_.command != Command::PERCENT || this->in_flight_.verification != Verification::SETTLED ||
+      this->awaiting_start_status_ || this->settle_rechecked_ ||
+      millis() - this->command_sent_at_ < MIN_COMMAND_GAP_MS)
+    return false;
+  // A normal STATUS_QUERY would sit behind the in-flight position command and
+  // answer only after the rail had finished. This read is deliberately direct;
+  // its notification still goes through apply_notification_ and is available
+  // to the coordinator as observed, not predicted, clearance.
+  return this->write_command_(Command::STATUS_QUERY, 0);
+}
+
 void MotionblindsBLEMotor::request_connect() {
   this->acquire_lease();
   this->request_status();
