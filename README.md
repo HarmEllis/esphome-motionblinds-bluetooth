@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta4
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta5
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta4
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta5
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -376,12 +376,15 @@ the right order. Five rules:
 
    For rails travelling in the same direction, a follower whose full target
    is blocked can start as soon as the leader is observed moving away and the
-   measured gap accommodates `min_gap` and `safety_margin`. Its first target is
-   clamped against the leader’s observed position. It advances in further
-   safe steps as fresh positions arrive, then completes any remainder after
-   the leader arrives. Known-different speed settings retain the full-target
-   clearance wait. The follower’s
-   connection can be prepared while it waits.
+   measured gap accommodates `min_gap` and `safety_margin`. While waiting for
+   that observation, the coordinator asks the moving leader for live positions;
+   a first reading after an optimistic start establishes the baseline, and a
+   later reading can prove departure before the leader finishes. Its first
+   target is clamped against the leader’s observed position. It advances in
+   further safe steps as fresh positions arrive, then completes any remainder
+   after the leader arrives. Known-different speed settings retain the
+   full-target clearance wait. The follower’s connection can be prepared while
+   it waits.
 
    Otherwise, when the rails already have at least `start_gap` between them,
    both start together — they are allowed to travel at the same time; what
@@ -444,9 +447,11 @@ was pure loss:
   the same amount, so **the gap never changes at all** — and a rule that waits
   for the gap to grow therefore waited out the leading rail's *entire* travel,
   every time. If the follower’s full destination is still blocked, it can
-  follow as soon as the leader is observed departing. Its first command is
-  limited to observed clearance. While the leader travels, the coordinator
-  asks for fresh positions and extends the follower's safe stopping point each
+  follow as soon as the leader is observed departing. The coordinator asks for
+  fresh positions while waiting for departure, including when the first live
+  reading only establishes a baseline after an optimistic start. Its first
+  command is limited to observed clearance. While the leader travels, the
+  coordinator keeps asking and extends the follower's safe stopping point each
   time it reaches the previous one. Any remainder is completed after the
   leader arrives. A known speed mismatch keeps the full-target clearance wait.
 
@@ -885,9 +890,8 @@ What this component does differently:
 
 ## Development
 
-The frame format, the collision geometry, the rail start policy and the two
-command-recovery decisions have no ESPHome or Bluetooth dependencies, so all of
-them run as host tests:
+The frame format, the collision geometry, the rail start policy, the coordinator
+with stub motors, and the two command-recovery decisions run as host tests:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -I esphome/components/motionblinds_ble \
@@ -897,6 +901,10 @@ g++ -std=c++17 -O2 -Wall -Wextra -I esphome/components/motionblinds_ble \
 
 g++ -std=c++17 -O2 -Wall -Wextra -I . -I esphome/components/motionblinds_ble_tdbu \
   test/tdbu_test.cpp -o tdbu_test && ./tdbu_test
+
+g++ -std=c++17 -O2 -Wall -Wextra -I test/stubs -I . -I esphome/components/motionblinds_ble_tdbu \
+  test/coordinator_test.cpp esphome/components/motionblinds_ble_tdbu/motionblinds_ble_tdbu.cpp \
+  -o coordinator_test && ./coordinator_test
 
 g++ -std=c++17 -O2 -Wall -Wextra -I esphome/components/motionblinds_ble \
   test/recovery_test.cpp -o recovery_test && ./recovery_test
@@ -923,12 +931,11 @@ Two of those fixtures — `quickstart_single.yaml` and `quickstart_tdbu.yaml` �
 are the quick start from this file, so a documented example that stops being a
 working configuration fails the build rather than wasting someone's evening.
 
-What the host suites do **not** cover is the connection and coordination state
-machines, which need ESPHome and a motor to exercise. Those have been run on
-hardware — six motors across two nodes — but they are not covered by an automated
-test, so treat changes there as needing a real blind. Three things in particular
-can only be confirmed on hardware, and are worth doing deliberately with the log
-lines named in [Making it fast](#making-it-fast):
+The host coordinator test uses stub motors; it cannot prove how a real motor
+answers live status requests over BLE. Treat changes there as needing a real
+blind. Three things in particular can only be confirmed on hardware, and are
+worth doing deliberately with the log lines named in
+[Making it fast](#making-it-fast):
 
 * the early release timing on a real translation (`has moved off`, with the two
   measured positions and the elapsed time);

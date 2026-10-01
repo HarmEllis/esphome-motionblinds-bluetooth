@@ -25,6 +25,25 @@ struct Blind {
 };
 
 int main() {
+  {
+    Blind b;
+    b.coordinator.set_optimistic(true);
+    b.top.fresh = b.bottom.fresh = false;
+    b.twilight();
+    b.bottom.position = 15; // first live reading, equivalent to HA cover position 85%
+    b.bottom.fresh = true;
+    b.coordinator.loop();
+    assert(b.top.commands == 0); // do not trust movement from a remembered baseline
+    const int queries_before = b.bottom.motion_status_queries;
+    esphome::test_now += 3000;
+    b.coordinator.loop();
+    assert(b.bottom.motion_status_queries > queries_before); // poll during the departure wait
+    assert(b.top.commands == 0); // a stalled leader still cannot release the follower
+    b.bottom.position = 30; // answer to the live query, while the leader is still busy
+    b.coordinator.loop();
+    assert(b.bottom.pending && b.top.commands == 1);
+    assert(b.top.target == 30); // follow only the observed clearance
+  }
   for (const bool downward : {false, true}) {
     Blind b;
     b.top.position = downward ? 20 : 70;
@@ -56,9 +75,10 @@ int main() {
     trail.complete(trail.target);
     b.coordinator.loop();
     assert(trail.commands == 1); // do not finish the clipped target while the leader is busy
+    const int queries_before_follow = lead.motion_status_queries;
     esphome::test_now += 3000;
     b.coordinator.loop();
-    assert(lead.motion_status_queries == 1); // ask for live clearance, not a queued post-move status
+    assert(lead.motion_status_queries == queries_before_follow + 1); // ask for live clearance during follow
     lead.position = downward ? 55 : 45;
     b.coordinator.loop();
     assert(trail.commands == 2 && lead.pending); // keep following before the leader finishes

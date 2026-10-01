@@ -669,6 +669,17 @@ void MotionblindsBLETdbu::advance_() {
   if (this->phase_ != Phase::LEADING || !this->has_trail_)
     return;
 
+  // In optimistic mode the leader may start from a remembered position. Its
+  // first live frame only establishes a trustworthy baseline; it cannot prove
+  // departure. Ask for further positions while waiting, otherwise a motor
+  // that sends no intermediate feedback releases the follower only at arrival.
+  if (this->wait_ == Wait::DEPARTURE && this->motor_(this->lead_)->position_write_sent()) {
+    const uint32_t now = millis();
+    if (now - this->last_follow_status_query_at_ >= FOLLOW_STATUS_INTERVAL_MS &&
+        this->motor_(this->lead_)->request_motion_status())
+      this->last_follow_status_query_at_ = now;
+  }
+
   // Do not let the tracker choose the trailing rail first: that would delay the
   // first physical movement, since it connects one client at a time. Once the
   // leading rail's command has actually gone out, the second connection can be
