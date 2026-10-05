@@ -10,6 +10,33 @@ Written while bringing six motors up on one ESP32-S3 in August 2026.
 
 ## The motors
 
+### Following a translating rail must not wait for every intermediate endpoint
+
+**Reported 2026-10-05; code path reproduced in host tests, device trial pending.**
+During a move to screen/twilight mode both rails travel together, but the top
+rail repeatedly stops and starts. The incremental follower was explicitly
+waiting for its motor to finish each clamped target before requesting another.
+The normal motor queue then adds the post-arrival command gap. Equal speed
+settings cannot remove either wait.
+
+The coordinator now extends a following rail's active absolute position move
+directly, including its final extension when the leader has arrived. Each new
+endpoint remains clamped to the leader's observed position; its intended
+destination is never clearance evidence. The motor accepts only extensions in
+the existing raw travel direction, at least three seconds apart, with a ready
+link, fresh position and no competing queued work or recovery query. Refused
+extensions leave the previous endpoint and verification intact and are retried
+by the coordinator. Successful writes reset arrival verification and the
+bounded delivery recovery for the new endpoint.
+
+Host tests cover both translation directions, an unwritten follower command,
+stale leader feedback, a refused extension, duplicate feedback, and extension
+to the final destination while the follower is still moving. Sparse feedback
+or a motor that does not accept retargeting during travel can still cause a
+pause; physical smoothness requires a device trial. The Home Assistant
+ESPHome app proxy returned HTTP 403 during this investigation, so live device
+logs could not be captured.
+
 ### Failed opens must leave other motors a chance to be discovered
 
 **Observed 2026-09-22, Woonkamer-ble-proxy-2.** A paired twilight request

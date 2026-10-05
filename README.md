@@ -10,7 +10,7 @@ cannot be established is reported as a failure rather than as a success.
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta5
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta6
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 ```
 
@@ -35,7 +35,7 @@ Every node needs these three blocks, whatever it drives:
 
 ```yaml
 external_components:
-  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta5
+  - source: github://HarmEllis/esphome-motionblinds-bluetooth@v1.0.1-beta6
     components: [motionblinds_ble, motionblinds_ble_tdbu]
 
 # Commands are encrypted with a wall-clock timestamp, so the node needs a
@@ -451,9 +451,13 @@ was pure loss:
   fresh positions while waiting for departure, including when the first live
   reading only establishes a baseline after an optimistic start. Its first
   command is limited to observed clearance. While the leader travels, the
-  coordinator keeps asking and extends the follower's safe stopping point each
-  time it reaches the previous one. Any remainder is completed after the
-  leader arrives. A known speed mismatch keeps the full-target clearance wait.
+  coordinator keeps asking and extends the follower's safe stopping point
+  while it is still moving, including the final extension when the leader
+  arrives. Extensions keep the same travel direction, remain limited to
+  measured clearance, and are spaced at least three seconds apart. This avoids
+  deliberately stopping at every intermediate target; sparse feedback or a
+  motor that ignores an extension can still cause a pause. A known speed
+  mismatch keeps the full-target clearance wait.
 
 The evidence for that release is logged, because it is the number to check if a
 blind ever looks like it started the second rail too early:

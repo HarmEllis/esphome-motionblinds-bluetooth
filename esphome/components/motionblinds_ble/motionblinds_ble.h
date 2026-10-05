@@ -110,6 +110,10 @@ class MotionblindsBLEMotor : public Component {
   /// requested_at may carry an upstream coordinator's timestamp so the log
   /// includes safety/refresh waits before the command reached this motor.
   bool request_position(float window_position, uint32_t requested_at = 0);
+  /// Extend an active absolute move without queueing behind its arrival.
+  /// Returns false while the link or command is not ready; the caller retries
+  /// from fresh clearance rather than queueing an old intermediate target.
+  bool request_position_extension(float window_position);
   bool request_open();
   bool request_close();
   bool request_stop();

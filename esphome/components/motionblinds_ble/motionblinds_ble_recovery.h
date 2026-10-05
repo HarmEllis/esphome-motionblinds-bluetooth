@@ -4,6 +4,13 @@
 
 namespace esphome::motionblinds_ble {
 
+// Retarget only farther along the active move. Raw direction also works for
+// inverted rails; a duplicate, reversal or already-passed target must wait for
+// the normal queue instead of interrupting the current command.
+constexpr bool position_extends_move(uint8_t position, uint8_t target, uint8_t extended) {
+  return (position < target && target < extended) || (position > target && target > extended);
+}
+
 // Leave a real advertisement-scanning opportunity between failed opens.
 // Retries use discovery, never immediately re-enter the cached-open queue.
 constexpr uint32_t connection_retry_delay(uint8_t failures) {

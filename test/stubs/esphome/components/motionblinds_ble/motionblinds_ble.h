@@ -17,6 +17,8 @@ class MotionblindsBLEMotor {
   int stops{0};
   int commands{0};
   int motion_status_queries{0};
+  int extensions{0};
+  bool accept_extension{true};
   float target{0};
   std::optional<int> speed_level{};
   RailRange range{};
@@ -38,6 +40,14 @@ class MotionblindsBLEMotor {
     pending = true;
     written = false;
     commands++;
+    return true;
+  }
+  bool request_position_extension(float value) {
+    if (!pending || !written || !accept_extension)
+      return false;
+    target = value;
+    commands++;
+    extensions++;
     return true;
   }
   bool request_status() { pending = true; return true; }

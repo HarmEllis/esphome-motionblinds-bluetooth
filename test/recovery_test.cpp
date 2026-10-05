@@ -166,6 +166,17 @@ void test_verify_start_after_clamp() {
 }  // namespace
 
 int main() {
+  for (int position = 0; position <= 100; position++) {
+    for (int target = 0; target <= 100; target++) {
+      for (int extended = 0; extended <= 100; extended++) {
+        const bool allowed = position_extends_move(position, target, extended);
+        check(!allowed || ((target > position) == (extended > target)), "extensions keep the raw travel direction");
+        check(!allowed || (extended != target && position != target), "duplicates and reached endpoints are refused");
+        check(allowed == (target > position ? extended > target : target < position && extended < target),
+              "only a farther endpoint extends a move, including inverted rails");
+      }
+    }
+  }
   check(connection_retry_delay(0) == 0, "the first connection is not delayed");
   check(connection_retry_delay(1) == 5000, "the first failed open leaves five seconds for other motors");
   check(connection_retry_delay(2) == 10000, "a repeated failure gets a longer cooldown");

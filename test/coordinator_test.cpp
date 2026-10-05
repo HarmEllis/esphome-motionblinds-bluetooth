@@ -25,6 +25,45 @@ struct Blind {
 };
 
 int main() {
+  for (const bool downward : {false, true}) {
+    Blind b;
+    b.top.position = downward ? 20 : 70;
+    b.bottom.position = downward ? 30 : 80;
+    b.coordinator.set_rail_position(Rail::TOP, downward ? 0.4f : 0.9f);
+    b.coordinator.set_rail_position(Rail::BOTTOM, downward ? 0.1f : 0.6f);
+    auto &lead = downward ? b.bottom : b.top;
+    auto &trail = downward ? b.top : b.bottom;
+    lead.written = true;
+    lead.position += downward ? 1 : -1;
+    b.coordinator.loop();
+    assert(trail.commands == 1);
+    const float first_target = trail.target;
+    lead.position = downward ? 45 : 55;
+    b.coordinator.loop();
+    assert(trail.commands == 1); // never queue an extension before the first write
+    trail.written = true;
+    trail.accept_extension = false;
+    b.coordinator.loop();
+    assert(trail.target == first_target && trail.commands == 1);
+    trail.accept_extension = true;
+    lead.fresh = false;
+    b.coordinator.loop();
+    assert(trail.commands == 1); // never extend using a disconnected leader
+    lead.fresh = true;
+    b.coordinator.loop();
+    assert(trail.pending && trail.written && trail.extensions == 1);
+    assert(trail.target == lead.position); // observed endpoint remains safe if lead stalls now
+    b.coordinator.loop();
+    assert(trail.extensions == 1); // unchanged feedback cannot generate duplicate writes
+    lead.complete(downward ? 90 : 10);
+    b.coordinator.loop();
+    assert(trail.pending && trail.written && trail.extensions == 2);
+    assert(trail.target == (downward ? 60 : 40)); // extend to final target without a last pause
+    trail.complete(trail.target);
+    b.coordinator.loop();
+    assert(std::strcmp(b.coordinator.status_text(), "idle") == 0);
+    assert(b.top.leases == 0 && b.bottom.leases == 0);
+  }
   {
     Blind b;
     b.coordinator.set_optimistic(true);

@@ -168,7 +168,7 @@ class MotionblindsBLETdbu : public Component {
   /// moving away may use the committed target because every interleaving then
   /// increases the gap. A bounded residual command completes targets that had
   /// to be clipped against an observed intermediate position.
-  bool command_(Rail rail, float window_target, float other_reference);
+  bool command_(Rail rail, float window_target, float other_reference, bool extend = false);
   /// Whether both motors have reported a speed setting and the two differ. A
   /// trailing rail travelling faster than the one it follows closes the gap for
   /// the whole move, which no amount of departure proof can see coming.

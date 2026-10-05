@@ -586,7 +586,7 @@ bool MotionblindsBLETdbu::speeds_known_different_() const {
   return *top_speed != *bottom_speed;
 }
 
-bool MotionblindsBLETdbu::command_(Rail rail, float window_target, float other_reference) {
+bool MotionblindsBLETdbu::command_(Rail rail, float window_target, float other_reference, bool extend) {
   MotionblindsBLEMotor *motor = this->motor_(rail);
   if (motor == nullptr)
     return false;
@@ -607,13 +607,16 @@ bool MotionblindsBLETdbu::command_(Rail rail, float window_target, float other_r
   const uint8_t raw = this->geometry_.raw_target(rail, window_target, other_reference);
   const float achieved = motor->rail_range().to_window(static_cast<float>(raw));
 
+  const bool accepted = extend ? motor->request_position_extension(achieved)
+                               : motor->request_position(achieved, this->current_request_at_);
+  if (!accepted)
+    return false;
+
   // Deliberately INFO: what was actually asked of a motor is the first thing
   // anyone needs when a blind does not move, and debug lines do not reach the
   // Home Assistant log.
   ESP_LOGI(TAG, "Commanding %s rail to %.1f%% of the window (raw %u)", rail == Rail::TOP ? "top" : "bottom", achieved,
            static_cast<unsigned>(raw));
-  if (!motor->request_position(achieved, this->current_request_at_))
-    return false;
 
   RailCommand &record = this->commanded_[rail == Rail::TOP ? 0 : 1];
   record.active = true;
@@ -764,7 +767,7 @@ void MotionblindsBLETdbu::advance_() {
 }
 
 void MotionblindsBLETdbu::follow_leader_() {
-  if (!this->incremental_follow_ || !this->motor_(this->lead_)->busy())
+  if (!this->incremental_follow_)
     return;
 
   RailCommand &record = this->commanded_[this->trail_ == Rail::TOP ? 0 : 1];
@@ -776,16 +779,15 @@ void MotionblindsBLETdbu::follow_leader_() {
   // wait behind the position command, so ask the moving leader directly. Its
   // reply updates the observed position through the usual notification path.
   const uint32_t now = millis();
-  if (now - this->last_follow_status_query_at_ >= FOLLOW_STATUS_INTERVAL_MS) {
+  if (this->motor_(this->lead_)->busy() && now - this->last_follow_status_query_at_ >= FOLLOW_STATUS_INTERVAL_MS) {
     this->last_follow_status_query_at_ = now;
     this->motor_(this->lead_)->request_motion_status();
   }
 
-  // Never pile target changes behind an in-flight follower move. Once it
-  // reaches the last safe stopping point, extend only as far as the leader's
-  // *observed* clearance now permits. A stalled lead therefore cannot be
-  // crossed, even when its announced destination is much farther away.
-  if (this->motor_(this->trail_)->busy() || !this->fresh_(this->lead_) || !this->fresh_(this->trail_))
+  // Extend the active move directly, rather than waiting for each intermediate
+  // endpoint and queueing another start. Every extension is still bounded by
+  // observed clearance, so even an immediately stalled leader cannot be crossed.
+  if (!this->fresh_(this->lead_) || !this->fresh_(this->trail_))
     return;
   const uint8_t raw = this->geometry_.raw_target(this->trail_, record.intended, this->position_(this->lead_));
   const float achievable = this->motor_(this->trail_)->rail_range().to_window(static_cast<float>(raw));
@@ -793,11 +795,15 @@ void MotionblindsBLETdbu::follow_leader_() {
   if (progress + 0.001f < std::fmax(3.0f, 3.0f * quantum) &&
       std::fabs(record.intended - achievable) > quantum)
     return;
-  ESP_LOGI(TAG, "Observed more room behind the %s rail; extending the %s rail from %.1f%% to %.1f%%",
-           this->lead_ == Rail::TOP ? "top" : "bottom", this->trail_ == Rail::TOP ? "top" : "bottom",
-           record.achieved, achievable);
-  if (!this->command_(this->trail_, this->trail_target_, this->position_(this->lead_)))
+  const float previous = record.achieved;
+  const bool extending = this->motor_(this->trail_)->busy();
+  if (this->command_(this->trail_, this->trail_target_, this->position_(this->lead_), extending)) {
+    ESP_LOGI(TAG, "Observed more room behind the %s rail; extending the %s rail from %.1f%% to %.1f%%%s",
+             this->lead_ == Rail::TOP ? "top" : "bottom", this->trail_ == Rail::TOP ? "top" : "bottom",
+             previous, achievable, extending ? " while moving" : "");
+  } else if (!extending) {
     this->abandon_("the following rail did not accept its next safe position");
+  }
 }
 
 MotionblindsBLETdbu::ResidualResult MotionblindsBLETdbu::complete_residual_() {

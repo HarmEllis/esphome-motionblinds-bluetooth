@@ -178,6 +178,37 @@ bool MotionblindsBLEMotor::request_position(float window_position, uint32_t requ
   return this->enqueue_(Command::PERCENT, raw, Verification::SETTLED, raw, requested_at);
 }
 
+bool MotionblindsBLEMotor::request_position_extension(float window_position) {
+  const uint32_t now = millis();
+  if (!std::isfinite(window_position) || this->state_ != MotorState::READY ||
+      this->handshake_ != Handshake::DONE || !this->position_fresh_ || !this->queue_.empty() ||
+      !this->position_write_sent() || this->in_flight_.verification != Verification::SETTLED ||
+      this->awaiting_start_status_ || this->settle_rechecked_ || this->position_retry_pending_ ||
+      now - this->command_sent_at_ < MIN_COMMAND_GAP_MS)
+    return false;
+
+  const uint8_t raw = static_cast<uint8_t>(lroundf(this->range_.to_raw(window_position)));
+  if (!position_extends_move(this->raw_position_, this->in_flight_.target, raw) ||
+      !this->write_command_(Command::PERCENT, raw))
+    return false;
+
+  // Update verification only after the write succeeds. A lost extension leaves
+  // the old endpoint safe; the usual bounded recovery checks the new endpoint.
+  this->in_flight_ = PendingCommand{Command::PERCENT, raw, Verification::SETTLED, raw, 1, now,
+                                  this->raw_position_, true, true};
+  this->command_sent_at_ = now;
+  const int distance = std::abs(static_cast<int>(raw) - static_cast<int>(this->raw_position_));
+  this->command_budget_ = TRAVEL_TIMEOUT_BASE_MS + distance * TRAVEL_TIMEOUT_PER_PERCENT_MS;
+  this->settle_matches_ = 0;
+  this->settle_rechecked_ = false;
+  this->position_retry_pending_ = false;
+  this->recheck_attempts_ = 0;
+  this->reset_start_check_();
+  this->last_activity_ = now;
+  // Keep moving_ and travel_direction_: this extends the same physical move.
+  return true;
+}
+
 bool MotionblindsBLEMotor::request_open() {
   // Sent as an explicit position rather than the protocol's OPEN command:
   // OPEN means "fully open in the motor's own frame", which is the wrong end
